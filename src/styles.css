@@ -1,0 +1,140 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Sentinel Bank design system — institutional light.
+ * Navy authority, electric blue action, crisp data surfaces.
+ */
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-surface: var(--surface);
+  --color-navy: var(--navy);
+  --color-navy-foreground: var(--navy-foreground);
+  --shadow-panel: 0 1px 2px oklch(0.21 0.04 265 / 0.06), 0 8px 24px oklch(0.21 0.04 265 / 0.06);
+}
+
+:root {
+  --radius: 0.5rem;
+  --background: oklch(0.995 0.002 250);
+  --foreground: oklch(0.21 0.04 265);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.04 265);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.04 265);
+  --primary: oklch(0.36 0.088 250);
+  --primary-foreground: oklch(0.99 0.005 250);
+  --secondary: oklch(0.962 0.008 250);
+  --secondary-foreground: oklch(0.3 0.05 258);
+  --muted: oklch(0.966 0.006 250);
+  --muted-foreground: oklch(0.53 0.03 256);
+  --accent: oklch(0.51 0.2 265);
+  --accent-foreground: oklch(0.99 0.005 250);
+  --destructive: oklch(0.55 0.22 27);
+  --destructive-foreground: oklch(0.99 0.005 250);
+  --success: oklch(0.55 0.14 155);
+  --success-foreground: oklch(0.99 0.005 250);
+  --warning: oklch(0.72 0.16 70);
+  --warning-foreground: oklch(0.21 0.04 265);
+  --border: oklch(0.916 0.012 252);
+  --input: oklch(0.916 0.012 252);
+  --ring: oklch(0.51 0.2 265);
+  --surface: oklch(0.978 0.005 250);
+  --navy: oklch(0.28 0.07 254);
+  --navy-foreground: oklch(0.97 0.005 250);
+}
+
+.dark {
+  --background: oklch(0.19 0.03 258);
+  --foreground: oklch(0.97 0.005 250);
+  --card: oklch(0.23 0.035 258);
+  --card-foreground: oklch(0.97 0.005 250);
+  --popover: oklch(0.23 0.035 258);
+  --popover-foreground: oklch(0.97 0.005 250);
+  --primary: oklch(0.9 0.02 250);
+  --primary-foreground: oklch(0.21 0.04 265);
+  --secondary: oklch(0.28 0.04 258);
+  --secondary-foreground: oklch(0.97 0.005 250);
+  --muted: oklch(0.28 0.04 258);
+  --muted-foreground: oklch(0.72 0.02 256);
+  --accent: oklch(0.62 0.18 265);
+  --accent-foreground: oklch(0.15 0.03 258);
+  --destructive: oklch(0.65 0.2 27);
+  --destructive-foreground: oklch(0.99 0.005 250);
+  --success: oklch(0.68 0.14 155);
+  --success-foreground: oklch(0.15 0.03 258);
+  --warning: oklch(0.78 0.15 70);
+  --warning-foreground: oklch(0.15 0.03 258);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.62 0.18 265);
+  --surface: oklch(0.22 0.03 258);
+  --navy: oklch(0.26 0.05 254);
+  --navy-foreground: oklch(0.97 0.005 250);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.015em;
+  }
+}
+
+@utility panel {
+  background-color: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+@utility label-caps {
+  font-size: 0.6875rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+}

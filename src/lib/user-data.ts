@@ -31,6 +31,8 @@ export type SecurityAlert = {
 export function useProfile() {
   return useQuery({
     queryKey: ["profile"],
+    refetchOnWindowFocus: true,
+    refetchInterval: 30_000,
     queryFn: async () => {
       const { data: auth } = await supabase.auth.getUser();
       if (!auth.user) return null;
@@ -48,6 +50,9 @@ export function useProfile() {
 export function useSecurityEvents(limit = 50) {
   return useQuery({
     queryKey: ["security_events", limit],
+    retry: 1,
+    refetchOnWindowFocus: true,
+    refetchInterval: 30_000,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("security_events")
@@ -65,6 +70,9 @@ export function useSecurityEvents(limit = 50) {
 export function useAlerts() {
   return useQuery({
     queryKey: ["security_alerts"],
+    retry: 1,
+    refetchOnWindowFocus: true,
+    refetchInterval: 30_000,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("security_alerts")
@@ -80,6 +88,8 @@ export function useAlerts() {
 export function useDevices() {
   return useQuery({
     queryKey: ["devices"],
+    refetchOnWindowFocus: true,
+    refetchInterval: 30_000,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("devices")
@@ -102,6 +112,12 @@ export function useSecurityRealtime() {
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "security_alerts" }, () => {
         void queryClient.invalidateQueries({ queryKey: ["security_alerts"] });
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "devices" }, () => {
+        void queryClient.invalidateQueries({ queryKey: ["devices"] });
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => {
+        void queryClient.invalidateQueries({ queryKey: ["profile"] });
       })
       .subscribe();
     return () => {

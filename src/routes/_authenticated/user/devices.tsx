@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { Laptop, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -7,6 +8,7 @@ import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { getDeviceInfo } from "@/lib/device";
+import { recordSecurityEvent } from "@/lib/security.functions";
 import { formatWhen, useAlerts, useDevices, useSecurityRealtime } from "@/lib/user-data";
 
 export const Route = createFileRoute("/_authenticated/user/devices")({
@@ -31,6 +33,7 @@ function DevicesPage() {
   const devices = useDevices();
   const alerts = useAlerts();
   const queryClient = useQueryClient();
+  const eventFn = useServerFn(recordSecurityEvent);
   const unread = (alerts.data ?? []).filter((a) => !a.read).length;
   const currentKey = typeof window === "undefined" ? "" : getDeviceInfo().deviceKey;
 
@@ -38,6 +41,13 @@ function DevicesPage() {
     mutationFn: async ({ id, trusted }: { id: string; trusted: boolean }) => {
       const { error } = await supabase.from("devices").update({ trusted }).eq("id", id);
       if (error) throw error;
+      await eventFn({
+        data: {
+          eventType: "DEVICE_TRUSTED",
+          device: getDeviceInfo(),
+          note: trusted ? "Device trusted" : "Device trust removed",
+        },
+      });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["devices"] }),
     onError: (e: Error) => toast.error("Update failed", { description: e.message }),
@@ -47,6 +57,13 @@ function DevicesPage() {
     mutationFn: async (id: string) => {
       const { error } = await supabase.from("devices").delete().eq("id", id);
       if (error) throw error;
+      await eventFn({
+        data: {
+          eventType: "DEVICE_REMOVED",
+          device: getDeviceInfo(),
+          note: "Registered device removed",
+        },
+      });
     },
     onSuccess: () => {
       toast.success("Device removed");
@@ -65,6 +82,18 @@ function DevicesPage() {
       </p>
 
       <div className="mt-6 grid gap-4 md:grid-cols-2">
+        {devices.isLoading && (
+          <p className="panel p-8 text-center text-sm text-muted-foreground">Loading devices…</p>
+        )}
+        {devices.isError && (
+          <div className="panel p-8 text-center">
+            <p className="text-sm text-destructive">Could not load registered devices.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{devices.error.message}</p>
+            <Button className="mt-4" variant="outline" onClick={() => void devices.refetch()}>
+              Try again
+            </Button>
+          </div>
+        )}
         {(devices.data ?? []).map((d) => {
           const isCurrent = d.device_key === currentKey;
           return (
@@ -119,7 +148,7 @@ function DevicesPage() {
             </div>
           );
         })}
-        {devices.data?.length === 0 && (
+        {!devices.isLoading && !devices.isError && devices.data?.length === 0 && (
           <p className="panel p-8 text-center text-sm text-muted-foreground">
             No devices registered yet.
           </p>

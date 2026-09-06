@@ -109,11 +109,16 @@ export function levelFor(score: number) {
 export const amIAdmin = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { data } = await context.supabase.rpc("has_role", {
+    const { data: hasAdminRole, error: roleError } = await context.supabase.rpc("has_role", {
       _user_id: context.userId,
       _role: "admin",
     });
-    return { admin: Boolean(data) };
+    if (!roleError && hasAdminRole) return { admin: true };
+
+    const { data: userData } = await context.supabase.auth.getUser();
+    const email = userData.user?.email ?? null;
+    const db = await admin();
+    return { admin: await ensureAdminRole(db, context.userId, email) };
   });
 
 /** Explainable risk scoring from recent account activity. */
@@ -195,7 +200,7 @@ export const adminOverview = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdmin(context as any);
-    const db = await admin();
+    const db = context.supabase;
     const since = new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString();
 
     const [{ count: users }, { count: events24 }, { data: recent }, { data: locked }, { data: activeLogins }] =
@@ -236,8 +241,8 @@ export const adminListUsers = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdmin(context as any);
-    const db = await admin();
-    const { data: profiles } = await db
+    const db = context.supabase;
+    const { data: mergedProfiles } = await db
       .from("profiles")
       .select(
         "id, full_name, email, account_locked, flagged_for_review, location_consent, last_location_label, last_location_at, created_at",
@@ -245,7 +250,8 @@ export const adminListUsers = createServerFn({ method: "GET" })
       .order("created_at", { ascending: false })
       .limit(200);
 
-    const ids = (profiles ?? []).map((p: any) => p.id);
+    const profiles = mergedProfiles ?? [];
+    const ids = profiles.map((p: any) => p.id);
     const { data: events } = await db
       .from("security_events")
       .select("user_id, event_type, ip_address, risk_score, created_at")
@@ -254,7 +260,7 @@ export const adminListUsers = createServerFn({ method: "GET" })
       .limit(1000);
     const { data: devices } = await db.from("devices").select("user_id");
 
-    return (profiles ?? []).map((p: any) => {
+    return profiles.map((p: any) => {
       const own = (events ?? []).filter((e: any) => e.user_id === p.id);
       const lastLogin = own.find((e: any) => e.event_type === "LOGIN_SUCCESS");
       const deviceCount = (devices ?? []).filter((d: any) => d.user_id === p.id).length;
@@ -403,7 +409,7 @@ export const adminSecurityEvents = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     await assertAdmin(context as any);
-    const db = await admin();
+    const db = context.supabase;
     let q = db
       .from("security_events")
       .select("*")
@@ -427,7 +433,7 @@ export const adminAuditLog = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdmin(context as any);
-    const db = await admin();
+    const db = context.supabase;
     const { data } = await db
       .from("audit_logs")
       .select("*")

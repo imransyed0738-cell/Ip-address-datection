@@ -61,19 +61,25 @@ function AdminLogin() {
   }
 
   async function finish() {
-    const res = await checkAdmin();
-    if (!res.admin) {
-      await supabase.auth.signOut();
-      toast.error("This account is not an administrator.");
-      return;
-    }
-    window.localStorage.removeItem(LOCK_KEY);
     try {
-      await recordSecurityEvent({ data: { eventType: "LOGIN_SUCCESS", device: getDeviceInfo(), note: "Admin console sign-in" } });
-    } catch {
-      /* event logging must never block sign-in */
+      const res = await checkAdmin();
+      if (!res.admin) {
+        await supabase.auth.signOut();
+        toast.error("This account is not an administrator.");
+        return;
+      }
+      window.localStorage.removeItem(LOCK_KEY);
+      try {
+        void recordSecurityEvent({ data: { eventType: "LOGIN_SUCCESS", device: getDeviceInfo(), note: "Admin console sign-in" } });
+      } catch {
+        /* event logging must never block sign-in */
+      }
+      navigate({ to: "/admin/dashboard", replace: true });
+    } catch (error) {
+      toast.error("Admin sign-in could not be completed", {
+        description: error instanceof Error ? error.message : "Please try again.",
+      });
     }
-    navigate({ to: "/admin/dashboard", replace: true });
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -92,6 +98,7 @@ function AdminLogin() {
         state.until
           ? "Account temporarily locked after repeated failed attempts."
           : `Sign-in failed. ${MAX_ATTEMPTS - state.fails} attempt(s) remaining.`,
+        { description: error.message },
       );
       return;
     }
@@ -130,6 +137,26 @@ function AdminLogin() {
     }
     await finish();
     setBusy(false);
+  }
+
+  async function resetPassword() {
+    const address = email.trim();
+    if (!address) {
+      toast.error("Enter the administrator email first.");
+      return;
+    }
+    setBusy(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(address, {
+      redirectTo: `${window.location.origin}/auth`,
+    });
+    setBusy(false);
+    if (error) {
+      toast.error("Could not send password reset", { description: error.message });
+      return;
+    }
+    toast.success("Password reset email sent", {
+      description: "Check the administrator inbox and spam folder.",
+    });
   }
 
   return (
@@ -196,6 +223,9 @@ function AdminLogin() {
             </div>
             <Button type="submit" className="w-full" disabled={busy}>
               {busy ? "Verifying…" : "Sign in"}
+            </Button>
+            <Button type="button" variant="link" className="w-full text-navy-foreground" onClick={resetPassword} disabled={busy}>
+              Forgot administrator password?
             </Button>
           </form>
         )}

@@ -9,7 +9,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
 import { getDeviceInfo } from "@/lib/device";
 import { recordSecurityEvent } from "@/lib/security.functions";
 
@@ -73,6 +72,7 @@ function AuthPage() {
   const [factorId, setFactorId] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
   const [resendIn, setResendIn] = useState(0);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -81,10 +81,23 @@ function AuthPage() {
   }, [resendIn]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauthError = params.get("error_description") ?? params.get("error");
+    if (!oauthError) return;
+
+    toast.error("Google sign-in failed", { description: oauthError.replace(/\+/g, " ") });
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete("error");
+    cleanUrl.searchParams.delete("error_code");
+    cleanUrl.searchParams.delete("error_description");
+    window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+  }, []);
+
+  useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate({ to: "/user/dashboard", replace: true });
+      if (data.session) void supabase.auth.signOut();
     });
-  }, [navigate]);
+  }, []);
 
   async function continueAfterPassword() {
     const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
@@ -97,23 +110,32 @@ function AuthPage() {
         return;
       }
     }
-    await afterSignIn();
     navigate({ to: "/user/dashboard", replace: true });
+    void afterSignIn();
   }
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
+    const email = String(form.get("email") ?? "").trim();
+    const password = String(form.get("password") ?? "");
+    setLoginError(null);
+    if (!email || !password) {
+      setLoginError("Email and password are required.");
+      return;
+    }
     setBusy(true);
     const { error } = await supabase.auth.signInWithPassword({
-      email: String(form.get("email") ?? "").trim(),
-      password: String(form.get("password") ?? ""),
+      email,
+      password,
     });
     if (error) {
       setBusy(false);
+      setLoginError(error.message);
       toast.error("Sign-in failed", { description: error.message });
       return;
     }
+    setLoginError(null);
     await continueAfterPassword();
     setBusy(false);
   }
@@ -128,8 +150,8 @@ function AuthPage() {
       toast.error("Invalid code", { description: error.message });
       return;
     }
-    await afterSignIn();
     navigate({ to: "/user/dashboard", replace: true });
+    void afterSignIn();
   }
 
   async function handleRegister(e: React.FormEvent<HTMLFormElement>) {
@@ -147,7 +169,7 @@ function AuthPage() {
     setBusy(true);
     const { full_name, email, password, mobile, address, city, state, country, postal_code } =
       parsed.data;
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -178,6 +200,12 @@ function AuthPage() {
       }
       return;
     }
+
+    if (data.session) {
+      await continueAfterPassword();
+      return;
+    }
+
     setPendingEmail(email);
     setResendIn(60);
   }
@@ -190,19 +218,6 @@ function AuthPage() {
     setResendIn(60);
     if (error) toast.error("Could not resend", { description: error.message });
     else toast.success("Confirmation email sent again");
-  }
-
-  async function handleGoogle() {
-    const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
-    });
-    if (result.error) {
-      toast.error("Google sign-in failed");
-      return;
-    }
-    if (result.redirected) return;
-    await afterSignIn();
-    navigate({ to: "/user/dashboard", replace: true });
   }
 
   async function handleForgot() {
@@ -289,6 +304,11 @@ function AuthPage() {
             <Button type="submit" className="w-full" disabled={busy}>
               {busy ? "Checking…" : "Sign in securely"}
             </Button>
+            {loginError && (
+              <p role="alert" className="text-sm text-destructive">
+                {loginError}
+              </p>
+            )}
           </form>
           <button
             type="button"
@@ -326,16 +346,7 @@ function AuthPage() {
         </TabsContent>
       </Tabs>
 
-      <div className="my-6 flex items-center gap-3 text-xs text-muted-foreground">
-        <span className="h-px flex-1 bg-border" />
-        OR
-        <span className="h-px flex-1 bg-border" />
-      </div>
-
-      <div className="space-y-3">
-        <Button variant="outline" className="w-full" onClick={handleGoogle}>
-          Continue with Google
-        </Button>
+      <div className="mt-6">
         <Link to="/admin/login" className="block">
           <Button variant="secondary" className="w-full">
             Admin sign in

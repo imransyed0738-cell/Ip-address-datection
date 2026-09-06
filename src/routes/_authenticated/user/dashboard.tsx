@@ -137,6 +137,31 @@ function Dashboard() {
         </div>
       </div>
 
+      <div className="mt-6 grid gap-4 lg:grid-cols-3">
+        <QuickLink
+          to="/user/security/location"
+          icon={MapPin}
+          label="Live geo tracking"
+          value={profile.data?.location_consent ? "Enabled" : "Enable location"}
+          detail={profile.data?.last_location_label ?? "Consent-based device location"}
+          tone={profile.data?.location_consent ? "success" : "warning"}
+        />
+        <QuickLink
+          to="/user/devices"
+          icon={Smartphone}
+          label="Device security"
+          value={`${devices.data?.length ?? 0} registered`}
+          detail={`${trustedDevices} trusted device${trustedDevices === 1 ? "" : "s"}`}
+        />
+        <QuickLink
+          to="/user/security/activity"
+          icon={Activity}
+          label="Security activity"
+          value={events.data?.[0] ? prettyEvent(events.data[0].event_type) : "No events yet"}
+          detail={events.data?.[0] ? formatWhen(events.data[0].created_at) : "View login and location events"}
+        />
+      </div>
+
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
           icon={ShieldCheck}
@@ -225,6 +250,35 @@ function Dashboard() {
         </AlertDialogContent>
       </AlertDialog>
     </AppShell>
+  );
+}
+
+function QuickLink({
+  to,
+  icon: Icon,
+  label,
+  value,
+  detail,
+  tone = "muted",
+}: {
+  to: "/user/security/location" | "/user/devices" | "/user/security/activity";
+  icon: typeof MapPin;
+  label: string;
+  value: string;
+  detail: string;
+  tone?: "success" | "warning" | "muted";
+}) {
+  const color = tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : "text-accent";
+  return (
+    <Link to={to} className="panel block p-5 transition-colors hover:border-accent/60 hover:bg-secondary/40">
+      <div className="flex items-center gap-2">
+        <Icon className={`size-5 ${color}`} />
+        <span className="label-caps">{label}</span>
+      </div>
+      <p className="mt-4 text-lg font-semibold">{value}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{detail}</p>
+      <span className="mt-4 inline-block text-xs font-medium text-accent">Open security view →</span>
+    </Link>
   );
 }
 

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { getDeviceInfo } from "@/lib/device";
 import { recordSecurityEvent, setLocationConsent, submitLocation } from "@/lib/security.functions";
-import { formatWhen, useAlerts, useProfile } from "@/lib/user-data";
+import { formatWhen, useAlerts, useProfile, useSecurityRealtime } from "@/lib/user-data";
 
 export const Route = createFileRoute("/_authenticated/user/security/location")({
   head: () => ({
@@ -31,6 +31,7 @@ export const Route = createFileRoute("/_authenticated/user/security/location")({
 });
 
 function LocationPage() {
+  useSecurityRealtime();
   const profile = useProfile();
   const alerts = useAlerts();
   const queryClient = useQueryClient();
@@ -52,9 +53,18 @@ function LocationPage() {
           data: { latitude: pos.coords.latitude, longitude: pos.coords.longitude },
         })
           .then(() => queryClient.invalidateQueries({ queryKey: ["profile"] }))
-          .catch(() => undefined);
+          .catch((error: Error) => {
+            toast.error("Location update failed", { description: error.message });
+          });
       },
-      () => undefined,
+      (err) => {
+        toast.error("Live location stopped", {
+          description:
+            err.code === GeolocationPositionError.PERMISSION_DENIED
+              ? "Location permission was denied. Allow it in your browser settings."
+              : err.message || "The device could not provide a location fix.",
+        });
+      },
       { enableHighAccuracy: false, maximumAge: 60_000, timeout: 20_000 },
     );
     watchRef.current = id;
@@ -66,17 +76,38 @@ function LocationPage() {
 
   const toggle = useMutation({
     mutationFn: async (enabled: boolean) => {
+      let position: GeolocationPosition | null = null;
       if (enabled) {
-        // Ask the browser first — no consent recorded unless permission is granted.
-        await new Promise<void>((resolve, reject) => {
-          if (!navigator.geolocation) return reject(new Error("Geolocation is not supported here."));
+        if (!window.isSecureContext) {
+          throw new Error("Location requires HTTPS or localhost.");
+        }
+        if (!navigator.geolocation) {
+          throw new Error("This browser does not support location services.");
+        }
+
+        // Ask the browser first — no consent is recorded unless permission is granted.
+        position = await new Promise<GeolocationPosition>((resolve, reject) => {
           navigator.geolocation.getCurrentPosition(
-            () => resolve(),
-            (err) => reject(new Error(err.message || "Permission denied")),
+            resolve,
+            (err) => {
+              const message =
+                err.code === GeolocationPositionError.PERMISSION_DENIED
+                  ? "Location permission was denied. Allow it in your browser settings and try again."
+                  : err.code === GeolocationPositionError.POSITION_UNAVAILABLE
+                    ? "Your device could not determine its location. Check location services and try again."
+                    : "Location lookup timed out. Try again."
+              reject(new Error(message));
+            },
+            { enableHighAccuracy: false, maximumAge: 60_000, timeout: 20_000 },
           );
         });
       }
       await consentFn({ data: { enabled } });
+      if (position) {
+        await submitFn({
+          data: { latitude: position.coords.latitude, longitude: position.coords.longitude },
+        });
+      }
       await eventFn({
         data: { eventType: "LOCATION_PERMISSION_CHANGED", device: getDeviceInfo() },
       }).catch(() => undefined);
@@ -85,10 +116,19 @@ function LocationPage() {
       void queryClient.invalidateQueries({ queryKey: ["profile"] });
       toast.success("Location preference saved");
     },
-    onError: (e: Error) => toast.error("Location not enabled", { description: e.message }),
+    onError: (e: Error) => {
+      void queryClient.invalidateQueries({ queryKey: ["profile"] });
+      toast.error("Location not enabled", { description: e.message });
+    },
   });
 
   async function refreshNow() {
+    if (!window.isSecureContext || !navigator.geolocation) {
+      toast.error("Location is unavailable", {
+        description: "Use HTTPS or localhost and enable your device location services.",
+      });
+      return;
+    }
     setBusy(true);
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
@@ -106,8 +146,14 @@ function LocationPage() {
       },
       (err) => {
         setBusy(false);
-        toast.error("Could not read location", { description: err.message });
+        toast.error("Could not read location", {
+          description:
+            err.code === GeolocationPositionError.PERMISSION_DENIED
+              ? "Location permission was denied. Allow it in your browser settings and try again."
+              : err.message,
+        });
       },
+      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 20_000 },
     );
   }
 
@@ -119,7 +165,17 @@ function LocationPage() {
       <p className="label-caps">Privacy & security</p>
       <h1 className="text-2xl font-semibold">Live security location</h1>
 
-      <div className="panel mt-6 p-5">
+      {profile.isError && (
+        <div className="panel mt-6 p-5">
+          <p className="text-sm text-destructive">Could not load location settings.</p>
+          <p className="mt-1 text-xs text-muted-foreground">{profile.error.message}</p>
+          <Button className="mt-4" variant="outline" onClick={() => void profile.refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+
+      {!profile.isError && <div className="panel mt-6 p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="font-semibold">Security location monitoring</h2>
@@ -169,7 +225,7 @@ function LocationPage() {
             {busy ? "Reading device location…" : "Update location now"}
           </Button>
         )}
-      </div>
+      </div>}
 
       {consent && lat != null && lng != null && (
         <div className="panel mt-6 overflow-hidden">

@@ -43,6 +43,23 @@ function ActivityPage() {
       </p>
 
       <div className="panel mt-6 overflow-x-auto">
+        {events.isLoading && (
+          <p className="px-4 py-10 text-center text-sm text-muted-foreground">Loading activity…</p>
+        )}
+        {events.isError && (
+          <div className="px-4 py-10 text-center">
+            <p className="text-sm text-destructive">Could not load security activity.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{events.error.message}</p>
+            <button
+              type="button"
+              className="mt-3 text-sm text-accent underline-offset-4 hover:underline"
+              onClick={() => void events.refetch()}
+            >
+              Try again
+            </button>
+          </div>
+        )}
+        {!events.isLoading && !events.isError && (
         <table className="w-full min-w-[820px] text-sm">
           <thead>
             <tr className="border-b border-border text-left">
@@ -90,6 +107,7 @@ function ActivityPage() {
             )}
           </tbody>
         </table>
+        )}
       </div>
     </AppShell>
   );

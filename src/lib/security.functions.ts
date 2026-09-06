@@ -11,8 +11,11 @@ function clientIp(): string {
   if (!h) return "unknown";
   const candidates = [
     h.get("cf-connecting-ip"),
+    h.get("true-client-ip"),
+    h.get("x-client-ip"),
     h.get("x-real-ip"),
     (h.get("x-forwarded-for") ?? "").split(",")[0]?.trim(),
+    h.get("forwarded")?.match(/for=(?:"?)(\[[^\]]+\]|[^;,\s"]+)/i)?.[1],
   ];
   const ip = candidates.find((v) => v && v.length > 0);
   return ip ?? "unknown";
@@ -90,6 +93,8 @@ const eventInput = z.object({
     "SESSIONS_TERMINATED",
     "SECURITY_ALERT",
     "PROFILE_UPDATED",
+    "DEVICE_TRUSTED",
+    "DEVICE_REMOVED",
   ]),
   device: deviceSchema,
   note: z.string().max(300).optional(),
@@ -100,20 +105,20 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => eventInput.parse(d))
   .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const supabase = context.supabase;
     const userId = context.userId;
     const ip = clientIp();
     const ua = clientUserAgent();
     const geo = await geoFromIp(ip);
 
-    const { data: recent } = await supabaseAdmin
+    const { data: recent } = await supabase
       .from("security_events")
       .select("ip_address, location_label, created_at, event_type")
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(50);
 
-    const { data: existingDevice } = await supabaseAdmin
+    const { data: existingDevice } = await supabase
       .from("devices")
       .select("id, trusted")
       .eq("user_id", userId)
@@ -154,7 +159,7 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
     const level = levelFor(score);
     const status = score >= 55 ? "Suspicious" : score >= 30 ? "Review" : "Trusted";
 
-    const { data: inserted, error } = await supabaseAdmin
+    const { data: inserted, error } = await supabase
       .from("security_events")
       .insert({
         user_id: userId,
@@ -179,7 +184,7 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
 
     // Upsert the device record
-    await supabaseAdmin.from("devices").upsert(
+    const { error: deviceError } = await supabase.from("devices").upsert(
       {
         user_id: userId,
         device_key: data.device.deviceKey,
@@ -192,10 +197,11 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
       },
       { onConflict: "user_id,device_key" },
     );
+    if (deviceError) throw new Error(deviceError.message);
 
     // Raise an alert for anything above routine
     if (score >= 30 || data.eventType !== "LOGIN_SUCCESS") {
-      await supabaseAdmin.from("security_alerts").insert({
+      const { error: alertError } = await supabase.from("security_alerts").insert({
         user_id: userId,
         title: titleFor(data.eventType, level),
         description: `${data.eventType.replaceAll("_", " ").toLowerCase()} • IP ${ip}${
@@ -205,9 +211,10 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
         category: "security",
         event_id: inserted.id,
       });
+      if (alertError) throw new Error(alertError.message);
     }
 
-    await supabaseAdmin.from("audit_logs").insert({
+    const { error: auditError } = await supabase.from("audit_logs").insert({
       actor_id: userId,
       actor_role: "user",
       action: data.eventType,
@@ -215,6 +222,7 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
       ip_address: ip,
       result: "success",
     });
+    if (auditError) throw new Error(auditError.message);
 
     return {
       id: inserted.id,
@@ -250,6 +258,10 @@ function titleFor(eventType: string, level: string) {
       return "Account locked";
     case "SESSIONS_TERMINATED":
       return "Other sessions were signed out";
+    case "DEVICE_TRUSTED":
+      return "Device trust changed";
+    case "DEVICE_REMOVED":
+      return "Device removed";
     default:
       return "Security event";
   }
@@ -266,7 +278,7 @@ export const setLocationConsent = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ enabled: z.boolean() }).parse(d))
   .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const supabase = context.supabase;
     const patch = data.enabled
       ? { location_consent: true, location_consent_at: new Date().toISOString() }
       : {
@@ -277,10 +289,10 @@ export const setLocationConsent = createServerFn({ method: "POST" })
           last_location_label: null,
           last_location_at: null,
         };
-    const { error } = await supabaseAdmin.from("profiles").update(patch).eq("id", context.userId);
+    const { error } = await supabase.from("profiles").update(patch).eq("id", context.userId);
     if (error) throw new Error(error.message);
 
-    await supabaseAdmin.from("audit_logs").insert({
+    const { error: auditError } = await supabase.from("audit_logs").insert({
       actor_id: context.userId,
       actor_role: "user",
       action: data.enabled ? "USER_ENABLED_LOCATION_CONSENT" : "USER_DISABLED_LOCATION_CONSENT",
@@ -288,6 +300,7 @@ export const setLocationConsent = createServerFn({ method: "POST" })
       ip_address: clientIp(),
       result: "success",
     });
+    if (auditError) throw new Error(auditError.message);
     return { ok: true };
   });
 
@@ -299,9 +312,9 @@ export const submitLocation = createServerFn({ method: "POST" })
       .parse(d),
   )
   .handler(async ({ data, context }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const supabase = context.supabase;
 
-    const { data: profile } = await supabaseAdmin
+    const { data: profile } = await supabase
       .from("profiles")
       .select("location_consent")
       .eq("id", context.userId)
@@ -315,7 +328,7 @@ export const submitLocation = createServerFn({ method: "POST" })
     const label = await reverseGeocode(data.latitude, data.longitude);
     const now = new Date().toISOString();
 
-    const { error } = await supabaseAdmin
+    const { error } = await supabase
       .from("profiles")
       .update({
         last_lat: data.latitude,
@@ -325,6 +338,21 @@ export const submitLocation = createServerFn({ method: "POST" })
       })
       .eq("id", context.userId);
     if (error) throw new Error(error.message);
+
+    const { error: eventError } = await supabase.from("security_events").insert({
+      user_id: context.userId,
+      event_type: "LOCATION_UPDATE",
+      ip_address: clientIp(),
+      user_agent: clientUserAgent(),
+      location_label: label,
+      latitude: data.latitude,
+      longitude: data.longitude,
+      risk_score: 0,
+      risk_level: "LOW",
+      status: "Trusted",
+      metadata: { source: "consented_device_location" },
+    });
+    if (eventError) throw new Error(eventError.message);
 
     return { label, updatedAt: now };
   });

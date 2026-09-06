@@ -56,6 +56,18 @@ function NotificationsPage() {
       </div>
 
       <div className="panel mt-6 divide-y divide-border">
+        {alerts.isLoading && (
+          <p className="p-10 text-center text-sm text-muted-foreground">Loading alerts…</p>
+        )}
+        {alerts.isError && (
+          <div className="p-10 text-center">
+            <p className="text-sm text-destructive">Could not load security alerts.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{alerts.error.message}</p>
+            <Button className="mt-4" variant="outline" onClick={() => void alerts.refetch()}>
+              Try again
+            </Button>
+          </div>
+        )}
         {(alerts.data ?? []).map((a) => (
           <article key={a.id} className="flex gap-4 p-5">
             <span
@@ -98,7 +110,7 @@ function NotificationsPage() {
             </div>
           </article>
         ))}
-        {alerts.data?.length === 0 && (
+        {!alerts.isLoading && !alerts.isError && alerts.data?.length === 0 && (
           <div className="flex flex-col items-center gap-2 p-12 text-center text-muted-foreground">
             <BellOff className="size-6" />
             <p className="text-sm">No alerts. Your account looks quiet.</p>

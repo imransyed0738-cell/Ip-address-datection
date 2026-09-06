@@ -110,6 +110,8 @@ function Dashboard() {
 
   const unread = (alerts.data ?? []).filter((a) => !a.read).length;
   const trustedDevices = (devices.data ?? []).filter((d) => d.trusted).length;
+  const monitoringError = events.error ?? devices.error ?? alerts.error;
+  const monitoringLoading = events.isLoading || devices.isLoading || alerts.isLoading;
 
   const score =
     (mfa.data ? 40 : 0) +
@@ -161,6 +163,37 @@ function Dashboard() {
           detail={events.data?.[0] ? formatWhen(events.data[0].created_at) : "View login and location events"}
         />
       </div>
+
+      <section className="panel mt-6 border-l-4 border-accent px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="label-caps">Monitoring status</p>
+            <p className="text-sm font-medium">
+              {monitoringLoading
+                ? "Loading security activity and devices…"
+                : monitoringError
+                  ? "Monitoring needs attention"
+                  : "Security activity and devices are being monitored"}
+            </p>
+            {monitoringError && (
+              <p className="mt-1 text-xs text-destructive">{monitoringError.message}</p>
+            )}
+          </div>
+          {monitoringError && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void queryClient.invalidateQueries({ queryKey: ["security_events"] });
+                void queryClient.invalidateQueries({ queryKey: ["devices"] });
+                void queryClient.invalidateQueries({ queryKey: ["security_alerts"] });
+              }}
+            >
+              Retry monitoring
+            </Button>
+          )}
+        </div>
+      </section>
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat

@@ -110,8 +110,8 @@ function AuthPage() {
         return;
       }
     }
+    await afterSignIn();
     navigate({ to: "/user/dashboard", replace: true });
-    void afterSignIn();
   }
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
@@ -150,8 +150,8 @@ function AuthPage() {
       toast.error("Invalid code", { description: error.message });
       return;
     }
+    await afterSignIn();
     navigate({ to: "/user/dashboard", replace: true });
-    void afterSignIn();
   }
 
   async function handleRegister(e: React.FormEvent<HTMLFormElement>) {

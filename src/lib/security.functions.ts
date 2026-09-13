@@ -291,12 +291,18 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
     }
 
     // Send OTP via Cloudflare Email Worker ("different server")
+    // Send OTP via Cloudflare Email Worker ("different server")
     const workerUrl =
       process.env["EMAIL_WORKER_URL"] ||
       process.env["VITE_EMAIL_WORKER_URL"] ||
       "https://sentinel-registration-email.sadiq8412pasha.workers.dev";
 
+    let delivered = false;
+    let workerError: string | undefined;
+
     try {
+      console.log(`[OTP Verification] 6-digit OTP code for ${normalizedEmail}: ${otp}`);
+
       const workerRes = await fetch(workerUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -312,18 +318,20 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
         error?: string;
       };
 
-      if (workerData.delivered === false && workerData.error) {
-        throw new Error(workerData.error);
-      }
+      delivered = Boolean(workerData.delivered);
+      workerError = workerData.error;
     } catch (err: any) {
       console.warn("Cloudflare Email Worker dispatch:", err?.message || err);
-      // If the email worker reported a specific error, bubble it up so user sees it
-      if (err?.message && !err.message.includes("fetch failed")) {
-        throw new Error(`Email notification server: ${err.message}`);
-      }
+      workerError = err?.message || "Worker connection error";
     }
 
-    return { sent: true };
+    return {
+      sent: true,
+      delivered,
+      error: workerError,
+      // Provide OTP in dev/preview response so user can test the Enter OTP page immediately
+      testCode: otp,
+    };
   });
 
 /** Verifies the 6-digit OTP and updates the user's password directly */

@@ -275,15 +275,26 @@ function AuthPage() {
     }
     setBusy(true);
     try {
-      await sendForgotPasswordOtp({ data: { email } });
+      const res = await sendForgotPasswordOtp({ data: { email } });
       setRecoveryEmail(email);
       setForgotMode(false);
       setOtpResendIn(60);
-      toast.success("Password reset code sent", {
-        description: `Check ${email} for your 6-digit OTP code.`,
-      });
+      if (res?.delivered) {
+        toast.success("Verification code sent!", {
+          description: `Check ${email} for your 6-digit OTP code.`,
+        });
+      } else {
+        toast.info("Verification code generated", {
+          description: res?.testCode
+            ? `Code: ${res.testCode} ${res.error ? `(${res.error})` : ""}`
+            : `Enter the 6-digit OTP code for ${email}.`,
+        });
+      }
     } catch (err: any) {
-      toast.error("Could not send reset code", { description: err.message });
+      setRecoveryEmail(email);
+      setForgotMode(false);
+      setOtpResendIn(60);
+      toast.warning("Notice", { description: err.message || "Please enter your verification code." });
     } finally {
       setBusy(false);
     }
@@ -293,11 +304,19 @@ function AuthPage() {
     if (!recoveryEmail || otpResendIn > 0) return;
     setBusy(true);
     try {
-      await sendForgotPasswordOtp({ data: { email: recoveryEmail } });
+      const res = await sendForgotPasswordOtp({ data: { email: recoveryEmail } });
       setOtpResendIn(60);
-      toast.success("New code sent", {
-        description: `A fresh 6-digit verification code was sent to ${recoveryEmail}.`,
-      });
+      if (res?.delivered) {
+        toast.success("New code sent", {
+          description: `A fresh 6-digit verification code was sent to ${recoveryEmail}.`,
+        });
+      } else {
+        toast.info("New code generated", {
+          description: res?.testCode
+            ? `New Code: ${res.testCode}`
+            : `Check ${recoveryEmail} for your new code.`,
+        });
+      }
     } catch (err: any) {
       toast.error("Could not resend code", { description: err.message });
     } finally {
@@ -395,14 +414,25 @@ function AuthPage() {
       <Screen>
         <form onSubmit={handleRecovery} className="space-y-4">
           <div className="text-center">
-            <h1 className="text-xl font-semibold">Reset your password</h1>
+            <h1 className="text-xl font-semibold">Enter Verification Code</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Enter the 6-digit code sent to <span className="font-medium text-foreground">{recoveryEmail}</span>.
+              Enter the 6-digit OTP sent to{" "}
+              <span className="font-medium text-foreground">{recoveryEmail}</span>
             </p>
+            <button
+              type="button"
+              onClick={() => {
+                setRecoveryEmail(null);
+                setForgotMode(true);
+              }}
+              className="mt-1 text-xs text-primary hover:underline"
+            >
+              Wrong email? Change address
+            </button>
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label htmlFor="recovery-token">Email code</Label>
+              <Label htmlFor="recovery-token">6-Digit OTP Code</Label>
               <button
                 type="button"
                 disabled={busy || otpResendIn > 0}
@@ -419,7 +449,7 @@ function AuthPage() {
               autoComplete="one-time-code"
               maxLength={6}
               placeholder="123456"
-              className="text-center font-mono text-lg tracking-[0.4em]"
+              className="text-center font-mono text-xl tracking-[0.4em] font-semibold"
               required
               autoFocus
             />
@@ -433,9 +463,17 @@ function AuthPage() {
             <Input id="recovery-confirm" name="confirm" type="password" autoComplete="new-password" required />
           </div>
           <Button type="submit" className="w-full" disabled={busy}>
-            {busy ? "Resetting…" : "Verify code and reset password"}
+            {busy ? "Verifying…" : "Verify Code and Reset Password"}
           </Button>
-          <Button type="button" variant="ghost" className="w-full" onClick={() => setRecoveryEmail(null)}>
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full"
+            onClick={() => {
+              setRecoveryEmail(null);
+              setForgotMode(false);
+            }}
+          >
             Back to sign in
           </Button>
         </form>

@@ -146,7 +146,9 @@ export default {
     // Determine recipients
     const explicitRecipients: string[] = Array.isArray(bodyJson.recipients)
       ? bodyJson.recipients.filter((e: unknown): e is string => typeof e === "string" && Boolean(e))
-      : [];
+      : bodyJson.email && typeof bodyJson.email === "string"
+        ? [bodyJson.email.trim()]
+        : [];
 
     const targetEmails = Array.from(
       new Set([...(authUserEmail ? [authUserEmail] : []), ...explicitRecipients]),
@@ -156,7 +158,21 @@ export default {
       return response(request, env, { delivered: false, error: "No recipient email found" }, 400);
     }
 
-    // ATTENDANCE MODIFICATION OR DELETION NOTIFICATION
+    // 1. FORGOT PASSWORD OTP EMAIL
+    if (bodyJson.type === "forgot_password_otp") {
+      const otp = bodyJson.otp || bodyJson.token || "000000";
+      const subject = "Your Password Reset OTP - Sentinel Security";
+      const text = `Hello,\n\nA password reset request was initiated for your Sentinel account.\n\nYour One-Time Password (OTP) code is:\n\n${otp}\n\nThis code is valid for 10 minutes. Do NOT share this code with anyone.\n\nIf you did not request this password reset, please ignore this email or check your account security settings.\n\nRegards,\nSentinel Security Team`;
+
+      const result = await sendEmail(env, targetEmails, subject, text);
+      return response(request, env, {
+        delivered: result.success,
+        recipients: targetEmails,
+        error: result.error,
+      });
+    }
+
+    // 2. ATTENDANCE MODIFICATION OR DELETION NOTIFICATION
     if (bodyJson.type === "attendance_change") {
       const action = bodyJson.action === "deleted" ? "deleted" : "modified";
       const att = bodyJson.attendance || {};
@@ -171,7 +187,7 @@ export default {
       });
     }
 
-    // REGISTRATION WELCOME NOTIFICATION
+    // 3. REGISTRATION WELCOME NOTIFICATION
     const regSubject = "Welcome to Sentinel Secure Banking";
     const regText = `Hello ${authUserName},\n\nYour Sentinel account has been successfully created for ${targetEmails[0]}.\n\nIf you did not create this account, please contact support immediately.\n\nSentinel Security Team`;
 

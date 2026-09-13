@@ -10,7 +10,11 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
 import { getDeviceInfo } from "@/lib/device";
-import { recordSecurityEvent } from "@/lib/security.functions";
+import {
+  recordSecurityEvent,
+  sendForgotPasswordOtp,
+  resetPasswordWithOtp,
+} from "@/lib/security.functions";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -64,6 +68,24 @@ async function afterSignIn() {
   }
 }
 
+async function sendRegistrationEmail(accessToken: string): Promise<{ delivered: boolean; reason?: string }> {
+  const workerUrl = import.meta.env["VITE_EMAIL_WORKER_URL"];
+  if (!workerUrl) return { delivered: false, reason: "The email service has not been configured." };
+
+  try {
+    const response = await fetch(workerUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const result = (await response.json().catch(() => null)) as { delivered?: boolean } | null;
+    return result?.delivered
+      ? { delivered: true }
+      : { delivered: false, reason: "The email service could not deliver the message." };
+  } catch {
+    return { delivered: false, reason: "The email service could not be reached." };
+  }
+}
+
 function AuthPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<"idle" | "mfa">("idle");
@@ -71,6 +93,7 @@ function AuthPage() {
   const [code, setCode] = useState("");
   const [factorId, setFactorId] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
+  const [recoveryEmail, setRecoveryEmail] = useState<string | null>(null);
   const [resendIn, setResendIn] = useState(0);
   const [loginError, setLoginError] = useState<string | null>(null);
 
@@ -202,6 +225,20 @@ function AuthPage() {
     }
 
     if (data.session) {
+      try {
+        const delivery = await sendRegistrationEmail(data.session.access_token);
+        if (delivery.delivered) {
+          toast.success("Welcome email sent", { description: `A message was sent to ${email}.` });
+        } else {
+          toast.warning("Account created, but email was not delivered", {
+            description: delivery.reason,
+          });
+        }
+      } catch {
+        toast.warning("Account created, but email was not delivered", {
+          description: "The email server could not be reached. Please try again later.",
+        });
+      }
       await continueAfterPassword();
       return;
     }
@@ -223,11 +260,105 @@ function AuthPage() {
   async function handleForgot() {
     const email = window.prompt("Enter your registered email address");
     if (!email) return;
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
-    if (error) toast.error("Could not send reset email", { description: error.message });
-    else toast.success("If that address is registered, a reset link is on its way.");
+    const normalizedEmail = email.trim().toLowerCase();
+    setBusy(true);
+    try {
+      await sendForgotPasswordOtp({ data: { email: normalizedEmail } });
+      setRecoveryEmail(normalizedEmail);
+      toast.success("Password reset code sent", {
+        description: "Check your email for the 6-digit OTP code.",
+      });
+    } catch (err: any) {
+      toast.error("Could not send reset code", { description: err.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRecovery(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!recoveryEmail) return;
+    const form = new FormData(e.currentTarget);
+    const token = String(form.get("token") ?? "").replace(/\D/g, "");
+    const password = String(form.get("password") ?? "");
+    const confirm = String(form.get("confirm") ?? "");
+    const passwordCheck = registerSchema.shape.password.safeParse(password);
+
+    if (token.length !== 6) {
+      toast.error("Enter the 6-digit code from your email.");
+      return;
+    }
+    if (!passwordCheck.success) {
+      toast.error(passwordCheck.error.issues[0]?.message ?? "Choose a stronger password.");
+      return;
+    }
+    if (password !== confirm) {
+      toast.error("Passwords do not match.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await resetPasswordWithOtp({
+        data: {
+          email: recoveryEmail,
+          otp: token,
+          password,
+        },
+      });
+      setRecoveryEmail(null);
+      toast.success("Password reset successfully", {
+        description: "You can now sign in with your new password.",
+      });
+    } catch (err: any) {
+      toast.error("Password reset failed", {
+        description: err.message || "Invalid or expired code.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (recoveryEmail) {
+    return (
+      <Screen>
+        <form onSubmit={handleRecovery} className="space-y-4">
+          <div className="text-center">
+            <h1 className="text-xl font-semibold">Reset your password</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Enter the 6-digit code sent to <span className="font-medium text-foreground">{recoveryEmail}</span>.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="recovery-token">Email code</Label>
+            <Input
+              id="recovery-token"
+              name="token"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              placeholder="123456"
+              className="text-center font-mono text-lg tracking-[0.4em]"
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="recovery-password">New password</Label>
+            <Input id="recovery-password" name="password" type="password" autoComplete="new-password" required />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="recovery-confirm">Confirm new password</Label>
+            <Input id="recovery-confirm" name="confirm" type="password" autoComplete="new-password" required />
+          </div>
+          <Button type="submit" className="w-full" disabled={busy}>
+            {busy ? "Resetting…" : "Verify code and reset password"}
+          </Button>
+          <Button type="button" variant="ghost" className="w-full" onClick={() => setRecoveryEmail(null)}>
+            Back to sign in
+          </Button>
+        </form>
+      </Screen>
+    );
   }
 
   if (pendingEmail) {

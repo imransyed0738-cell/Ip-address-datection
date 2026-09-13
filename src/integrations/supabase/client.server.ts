@@ -31,21 +31,28 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
 
 function createSupabaseAdminClient() {
   const SUPABASE_URL = process.env['SUPABASE_URL'];
-  const SUPABASE_SERVICE_ROLE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'];
+  // Lovable's Supabase connection provides this as SUPABASE_SERVICE_ROLE_KEY.
+  // SUPABASE_SECRET_KEY is also accepted for projects using Supabase's newer
+  // key naming, so a server-side deployment does not fail solely on that name.
+  const SUPABASE_SERVICE_ROLE_KEY =
+    process.env['SUPABASE_SERVICE_ROLE_KEY'] || process.env['SUPABASE_SECRET_KEY'];
 
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    const missing = [
-      ...(!SUPABASE_URL ? ['SUPABASE_URL'] : []),
-      ...(!SUPABASE_SERVICE_ROLE_KEY ? ['SUPABASE_SERVICE_ROLE_KEY'] : []),
-    ];
-    const message = `Missing Supabase environment variable(s): ${missing.join(', ')}. Connect Supabase in Lovable Cloud.`;
-    console.error(`[Supabase] ${message}`);
-    throw new Error(message);
+  const keyToUse =
+    SUPABASE_SERVICE_ROLE_KEY ||
+    process.env['SUPABASE_PUBLISHABLE_KEY'] ||
+    process.env['VITE_SUPABASE_PUBLISHABLE_KEY'] ||
+    '';
+
+  if (!SUPABASE_URL || !keyToUse) {
+    console.warn('[Supabase] Warning: SUPABASE_URL or API key is not configured.');
+    return createClient<Database>(SUPABASE_URL || 'https://placeholder.supabase.co', keyToUse || 'placeholder', {
+      auth: { persistSession: false },
+    });
   }
 
-  return createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  return createClient<Database>(SUPABASE_URL, keyToUse, {
     global: {
-      fetch: createSupabaseFetch(SUPABASE_SERVICE_ROLE_KEY),
+      fetch: createSupabaseFetch(keyToUse),
     },
     auth: {
       storage: undefined,

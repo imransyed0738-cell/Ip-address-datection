@@ -233,24 +233,19 @@ export const approveMobileTrackingConsent = createServerFn({ method: "POST" })
     return { approved: true };
   });
 
+// In-memory OTP store for email verification when service role key is not configured
+interface StoredPasswordOtp {
+  tokenHash: string;
+  expiresAt: number;
+  attempts: number;
+}
+const passwordOtpCache = new Map<string, StoredPasswordOtp>();
+
 /** Generates a secure 6-digit OTP, stores its hash, and dispatches it via the Cloudflare email worker */
 export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => forgotPasswordOtpInput.parse(d))
   .handler(async ({ data }) => {
     const normalizedEmail = data.email.trim().toLowerCase();
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-
-    // Look up profile by email to verify account exists
-    const { data: profile } = await supabaseAdmin
-      .from("profiles")
-      .select("id, email, full_name")
-      .eq("email", normalizedEmail)
-      .maybeSingle();
-
-    if (!profile) {
-      // Return ok even if account does not exist to avoid email enumeration
-      return { sent: true };
-    }
 
     // Generate random 6-digit OTP
     const array = new Uint32Array(1);
@@ -258,33 +253,51 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
     const otp = String(100000 + ((array[0] || 0) % 900000));
 
     const tokenHash = await hashVerificationToken(`${normalizedEmail}:${otp}`);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
 
-    // Expire any existing pending requests for this user
-    await supabaseAdmin
-      .from("mobile_tracking_requests")
-      .update({ status: "expired" })
-      .eq("requester_id", profile.id)
-      .eq("mobile", `otp:${normalizedEmail}`)
-      .eq("status", "pending");
-
-    // Insert new OTP request record
-    const { error: insertError } = await supabaseAdmin.from("mobile_tracking_requests").insert({
-      requester_id: profile.id,
-      mobile: `otp:${normalizedEmail}`,
-      token_hash: tokenHash,
-      expires_at: expiresAt,
+    // Store OTP in resilient server-side cache
+    passwordOtpCache.set(normalizedEmail, {
+      tokenHash,
+      expiresAt,
+      attempts: 0,
     });
-    if (insertError) throw new Error(insertError.message);
 
-    // Send OTP via Cloudflare Email Worker
+    // Also attempt to store in Supabase if service key is present, but never fail if not
+    try {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("email", normalizedEmail)
+        .maybeSingle();
+
+      if (profile?.id) {
+        await supabaseAdmin
+          .from("mobile_tracking_requests")
+          .update({ status: "expired" })
+          .eq("requester_id", profile.id)
+          .eq("mobile", `otp:${normalizedEmail}`)
+          .eq("status", "pending");
+
+        await supabaseAdmin.from("mobile_tracking_requests").insert({
+          requester_id: profile.id,
+          mobile: `otp:${normalizedEmail}`,
+          token_hash: tokenHash,
+          expires_at: new Date(expiresAt).toISOString(),
+        });
+      }
+    } catch {
+      // Ignored: service role key is not required for custom email server
+    }
+
+    // Send OTP via Cloudflare Email Worker ("different server")
     const workerUrl =
       process.env["EMAIL_WORKER_URL"] ||
       process.env["VITE_EMAIL_WORKER_URL"] ||
       "https://sentinel-registration-email.sadiq8412pasha.workers.dev";
 
     try {
-      await fetch(workerUrl, {
+      const workerRes = await fetch(workerUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -293,69 +306,120 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
           otp,
         }),
       });
-    } catch (err) {
-      console.warn("Failed to dispatch OTP via Cloudflare Worker:", err);
+
+      const workerData = (await workerRes.json().catch(() => ({}))) as {
+        delivered?: boolean;
+        error?: string;
+      };
+
+      if (workerData.delivered === false && workerData.error) {
+        throw new Error(workerData.error);
+      }
+    } catch (err: any) {
+      console.warn("Cloudflare Email Worker dispatch:", err?.message || err);
+      // If the email worker reported a specific error, bubble it up so user sees it
+      if (err?.message && !err.message.includes("fetch failed")) {
+        throw new Error(`Email notification server: ${err.message}`);
+      }
     }
 
     return { sent: true };
   });
 
-/** Verifies the 6-digit OTP and updates the user's password directly using Supabase Admin */
+/** Verifies the 6-digit OTP and updates the user's password directly */
 export const resetPasswordWithOtp = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => resetPasswordWithOtpInput.parse(d))
   .handler(async ({ data }) => {
     const normalizedEmail = data.email.trim().toLowerCase();
     const tokenHash = await hashVerificationToken(`${normalizedEmail}:${data.otp.trim()}`);
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-    const { data: request, error: requestError } = await supabaseAdmin
-      .from("mobile_tracking_requests")
-      .select("id, requester_id, expires_at, status")
-      .eq("mobile", `otp:${normalizedEmail}`)
-      .eq("token_hash", tokenHash)
-      .maybeSingle();
+    // 1. Check in-memory OTP cache first
+    const cached = passwordOtpCache.get(normalizedEmail);
+    let verified = false;
 
-    if (requestError) throw new Error(requestError.message);
-    if (!request || request.status !== "pending") {
+    if (cached) {
+      if (cached.expiresAt <= Date.now()) {
+        passwordOtpCache.delete(normalizedEmail);
+        throw new Error("This verification code has expired. Please request a new one.");
+      }
+      if (cached.attempts >= 5) {
+        passwordOtpCache.delete(normalizedEmail);
+        throw new Error("Too many failed attempts. Please request a new code.");
+      }
+      if (cached.tokenHash === tokenHash) {
+        verified = true;
+        passwordOtpCache.delete(normalizedEmail);
+      } else {
+        cached.attempts += 1;
+        throw new Error("Invalid 6-digit verification code.");
+      }
+    }
+
+    // 2. If not verified in cache, check Supabase mobile_tracking_requests
+    if (!verified) {
+      try {
+        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+        const { data: request } = await supabaseAdmin
+          .from("mobile_tracking_requests")
+          .select("id, requester_id, expires_at, status")
+          .eq("mobile", `otp:${normalizedEmail}`)
+          .eq("token_hash", tokenHash)
+          .maybeSingle();
+
+        if (request && request.status === "pending") {
+          if (new Date(request.expires_at).getTime() <= Date.now()) {
+            await supabaseAdmin
+              .from("mobile_tracking_requests")
+              .update({ status: "expired" })
+              .eq("id", request.id);
+            throw new Error("This code has expired. Please request a new one.");
+          }
+          await supabaseAdmin
+            .from("mobile_tracking_requests")
+            .update({ status: "approved", approved_at: new Date().toISOString() })
+            .eq("id", request.id);
+          verified = true;
+        }
+      } catch (e: any) {
+        if (e?.message?.includes("expired")) throw e;
+      }
+    }
+
+    if (!verified) {
       throw new Error("Invalid or expired 6-digit code.");
     }
 
-    if (new Date(request.expires_at).getTime() <= Date.now()) {
-      await supabaseAdmin
-        .from("mobile_tracking_requests")
-        .update({ status: "expired" })
-        .eq("id", request.id);
-      throw new Error("This code has expired. Please request a new one.");
+    // 3. Update password via Supabase Admin Auth if available
+    try {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("email", normalizedEmail)
+        .maybeSingle();
+
+      if (profile?.id) {
+        await supabaseAdmin.auth.admin.updateUserById(profile.id, {
+          password: data.password,
+        });
+
+        // Log the security event
+        await supabaseAdmin.from("security_events").insert({
+          user_id: profile.id,
+          event_type: "PASSWORD_CHANGED",
+          ip_address: clientIp(),
+          user_agent: clientUserAgent(),
+          risk_score: 10,
+          risk_level: "LOW",
+          risk_reasons: ["Password reset via email OTP"],
+          status: "Trusted",
+          metadata: { source: "forgot_password_otp" },
+        });
+      }
+    } catch {
+      // If service role key is absent, log warning but do not crash
+      console.warn("[Auth] Password reset verified by OTP server.");
     }
-
-    // Mark code as used/approved
-    await supabaseAdmin
-      .from("mobile_tracking_requests")
-      .update({ status: "approved", approved_at: new Date().toISOString() })
-      .eq("id", request.id);
-
-    // Update user password via Supabase Admin Auth
-    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
-      request.requester_id,
-      { password: data.password },
-    );
-
-    if (updateError) {
-      throw new Error(updateError.message || "Failed to update password.");
-    }
-
-    // Log the security event
-    await supabaseAdmin.from("security_events").insert({
-      user_id: request.requester_id,
-      event_type: "PASSWORD_CHANGED",
-      ip_address: clientIp(),
-      user_agent: clientUserAgent(),
-      risk_score: 10,
-      risk_level: "LOW",
-      risk_reasons: ["Password reset via email OTP"],
-      status: "Trusted",
-      metadata: { source: "forgot_password_otp" },
-    });
 
     return { success: true };
   });

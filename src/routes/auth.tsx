@@ -97,6 +97,7 @@ function AuthPage() {
   const [forgotMode, setForgotMode] = useState(false);
   const [forgotInputEmail, setForgotInputEmail] = useState("");
   const [resendIn, setResendIn] = useState(0);
+  const [otpResendIn, setOtpResendIn] = useState(0);
   const [loginError, setLoginError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -104,6 +105,12 @@ function AuthPage() {
     const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
     return () => clearTimeout(t);
   }, [resendIn]);
+
+  useEffect(() => {
+    if (otpResendIn <= 0) return;
+    const t = setTimeout(() => setOtpResendIn((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [otpResendIn]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -271,11 +278,28 @@ function AuthPage() {
       await sendForgotPasswordOtp({ data: { email } });
       setRecoveryEmail(email);
       setForgotMode(false);
+      setOtpResendIn(60);
       toast.success("Password reset code sent", {
         description: `Check ${email} for your 6-digit OTP code.`,
       });
     } catch (err: any) {
       toast.error("Could not send reset code", { description: err.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendForgotPasswordOtp() {
+    if (!recoveryEmail || otpResendIn > 0) return;
+    setBusy(true);
+    try {
+      await sendForgotPasswordOtp({ data: { email: recoveryEmail } });
+      setOtpResendIn(60);
+      toast.success("New code sent", {
+        description: `A fresh 6-digit verification code was sent to ${recoveryEmail}.`,
+      });
+    } catch (err: any) {
+      toast.error("Could not resend code", { description: err.message });
     } finally {
       setBusy(false);
     }
@@ -377,7 +401,17 @@ function AuthPage() {
             </p>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="recovery-token">Email code</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="recovery-token">Email code</Label>
+              <button
+                type="button"
+                disabled={busy || otpResendIn > 0}
+                onClick={resendForgotPasswordOtp}
+                className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+              >
+                {otpResendIn > 0 ? `Resend in ${otpResendIn}s` : "Resend code"}
+              </button>
+            </div>
             <Input
               id="recovery-token"
               name="token"
@@ -387,6 +421,7 @@ function AuthPage() {
               placeholder="123456"
               className="text-center font-mono text-lg tracking-[0.4em]"
               required
+              autoFocus
             />
           </div>
           <div className="space-y-2">

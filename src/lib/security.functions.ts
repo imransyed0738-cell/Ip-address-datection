@@ -301,8 +301,6 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
     let workerError: string | undefined;
 
     try {
-      console.log(`[OTP Verification] 6-digit OTP code for ${normalizedEmail}: ${otp}`);
-
       const workerRes = await fetch(workerUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -329,8 +327,6 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
       sent: true,
       delivered,
       error: workerError,
-      // Provide OTP in dev/preview response so user can test the Enter OTP page immediately
-      testCode: otp,
     };
   });
 

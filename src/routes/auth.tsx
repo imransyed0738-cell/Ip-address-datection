@@ -287,10 +287,8 @@ function AuthPage() {
           description: `Check your phone's email app (${email}) for the 6-digit OTP notification.`,
         });
       } else {
-        toast.info("Verification code generated", {
-          description: res?.testCode
-            ? `Code: ${res.testCode} (Notification server: ${res?.error || "ready"})`
-            : `Check your email (${email}) for your OTP code.`,
+        toast.info("Verification code dispatched", {
+          description: `Sent to ${email}. Check your inbox and spam folder.`,
         });
       }
     } catch {
@@ -314,10 +312,8 @@ function AuthPage() {
           description: `Check your phone's email app for the new OTP notification.`,
         });
       } else {
-        toast.info("New code generated", {
-          description: res?.testCode
-            ? `New Code: ${res.testCode}`
-            : `Check your email for the new code.`,
+        toast.info("New code dispatched", {
+          description: `Sent to ${recoveryEmail}. Check your inbox and spam folder.`,
         });
       }
     } catch (err: any) {

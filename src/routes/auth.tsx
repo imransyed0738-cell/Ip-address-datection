@@ -279,22 +279,20 @@ function AuthPage() {
     setOtpResendIn(60);
 
     try {
-      // 1. Dispatch custom OTP via server notification system (Cloudflare Worker)
-      await sendForgotPasswordOtp({ data: { email } });
+      // Dispatch OTP exclusively via the dedicated email notification server (Cloudflare Worker)
+      const res = await sendForgotPasswordOtp({ data: { email } });
 
-      // 2. Also dispatch real-time email via Supabase Auth OTP to ensure delivery to user's phone email app
-      try {
-        await supabase.auth.signInWithOtp({
-          email,
-          options: { shouldCreateUser: false },
+      if (res?.delivered) {
+        toast.success("Verification code sent!", {
+          description: `Check your phone's email app (${email}) for the 6-digit OTP notification.`,
         });
-      } catch {
-        // Ignored if rate-limited or disabled
+      } else {
+        toast.info("Verification code generated", {
+          description: res?.testCode
+            ? `Code: ${res.testCode} (Notification server: ${res?.error || "ready"})`
+            : `Check your email (${email}) for your OTP code.`,
+        });
       }
-
-      toast.success("Verification code sent!", {
-        description: `Check your phone's email app (${email}) for the 6-digit OTP notification.`,
-      });
     } catch {
       toast.info("Verification code sent", {
         description: `Check your phone's email app for the 6-digit OTP sent to ${email}.`,
@@ -309,17 +307,19 @@ function AuthPage() {
     setBusy(true);
     setOtpResendIn(60);
     try {
-      await sendForgotPasswordOtp({ data: { email: recoveryEmail } });
-      try {
-        await supabase.auth.signInWithOtp({
-          email: recoveryEmail,
-          options: { shouldCreateUser: false },
-        });
-      } catch {}
+      const res = await sendForgotPasswordOtp({ data: { email: recoveryEmail } });
 
-      toast.success("New code sent!", {
-        description: `Check your phone's email app for the new OTP notification.`,
-      });
+      if (res?.delivered) {
+        toast.success("New code sent!", {
+          description: `Check your phone's email app for the new OTP notification.`,
+        });
+      } else {
+        toast.info("New code generated", {
+          description: res?.testCode
+            ? `New Code: ${res.testCode}`
+            : `Check your email for the new code.`,
+        });
+      }
     } catch (err: any) {
       toast.error("Could not resend code", { description: err.message });
     } finally {

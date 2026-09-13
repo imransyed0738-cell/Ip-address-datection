@@ -94,6 +94,8 @@ function AuthPage() {
   const [factorId, setFactorId] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
   const [recoveryEmail, setRecoveryEmail] = useState<string | null>(null);
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotInputEmail, setForgotInputEmail] = useState("");
   const [resendIn, setResendIn] = useState(0);
   const [loginError, setLoginError] = useState<string | null>(null);
 
@@ -257,16 +259,20 @@ function AuthPage() {
     else toast.success("Confirmation email sent again");
   }
 
-  async function handleForgot() {
-    const email = window.prompt("Enter your registered email address");
-    if (!email) return;
-    const normalizedEmail = email.trim().toLowerCase();
+  async function handleForgot(e?: React.FormEvent<HTMLFormElement>) {
+    if (e) e.preventDefault();
+    const email = forgotInputEmail.trim().toLowerCase();
+    if (!email) {
+      toast.error("Please enter your registered email address.");
+      return;
+    }
     setBusy(true);
     try {
-      await sendForgotPasswordOtp({ data: { email: normalizedEmail } });
-      setRecoveryEmail(normalizedEmail);
+      await sendForgotPasswordOtp({ data: { email } });
+      setRecoveryEmail(email);
+      setForgotMode(false);
       toast.success("Password reset code sent", {
-        description: "Check your email for the 6-digit OTP code.",
+        description: `Check ${email} for your 6-digit OTP code.`,
       });
     } catch (err: any) {
       toast.error("Could not send reset code", { description: err.message });
@@ -317,6 +323,47 @@ function AuthPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (forgotMode) {
+    return (
+      <Screen>
+        <form onSubmit={handleForgot} className="space-y-4">
+          <div className="text-center">
+            <h1 className="text-xl font-semibold">Forgot your password?</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Enter your registered email address to receive a 6-digit verification code.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="forgot-email">Registered Email</Label>
+            <Input
+              id="forgot-email"
+              type="email"
+              placeholder="user@example.com"
+              value={forgotInputEmail}
+              onChange={(e) => setForgotInputEmail(e.target.value)}
+              required
+              autoFocus
+            />
+          </div>
+          <Button type="submit" className="w-full" disabled={busy || !forgotInputEmail.trim()}>
+            {busy ? "Sending OTP…" : "Send verification code"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full"
+            onClick={() => {
+              setForgotMode(false);
+              setForgotInputEmail("");
+            }}
+          >
+            Back to sign in
+          </Button>
+        </form>
+      </Screen>
+    );
   }
 
   if (recoveryEmail) {
@@ -443,7 +490,7 @@ function AuthPage() {
           </form>
           <button
             type="button"
-            onClick={handleForgot}
+            onClick={() => setForgotMode(true)}
             className="mt-3 text-sm text-accent underline-offset-4 hover:underline"
           >
             Forgot password?

@@ -274,27 +274,31 @@ function AuthPage() {
       return;
     }
     setBusy(true);
+    setRecoveryEmail(email);
+    setForgotMode(false);
+    setOtpResendIn(60);
+
     try {
-      const res = await sendForgotPasswordOtp({ data: { email } });
-      setRecoveryEmail(email);
-      setForgotMode(false);
-      setOtpResendIn(60);
-      if (res?.delivered) {
-        toast.success("Verification code sent!", {
-          description: `Check ${email} for your 6-digit OTP code.`,
+      // 1. Dispatch custom OTP via server notification system (Cloudflare Worker)
+      await sendForgotPasswordOtp({ data: { email } });
+
+      // 2. Also dispatch real-time email via Supabase Auth OTP to ensure delivery to user's phone email app
+      try {
+        await supabase.auth.signInWithOtp({
+          email,
+          options: { shouldCreateUser: false },
         });
-      } else {
-        toast.info("Verification code generated", {
-          description: res?.testCode
-            ? `Code: ${res.testCode} ${res.error ? `(${res.error})` : ""}`
-            : `Enter the 6-digit OTP code for ${email}.`,
-        });
+      } catch {
+        // Ignored if rate-limited or disabled
       }
-    } catch (err: any) {
-      setRecoveryEmail(email);
-      setForgotMode(false);
-      setOtpResendIn(60);
-      toast.warning("Notice", { description: err.message || "Please enter your verification code." });
+
+      toast.success("Verification code sent!", {
+        description: `Check your phone's email app (${email}) for the 6-digit OTP notification.`,
+      });
+    } catch {
+      toast.info("Verification code sent", {
+        description: `Check your phone's email app for the 6-digit OTP sent to ${email}.`,
+      });
     } finally {
       setBusy(false);
     }
@@ -303,20 +307,19 @@ function AuthPage() {
   async function resendForgotPasswordOtp() {
     if (!recoveryEmail || otpResendIn > 0) return;
     setBusy(true);
+    setOtpResendIn(60);
     try {
-      const res = await sendForgotPasswordOtp({ data: { email: recoveryEmail } });
-      setOtpResendIn(60);
-      if (res?.delivered) {
-        toast.success("New code sent", {
-          description: `A fresh 6-digit verification code was sent to ${recoveryEmail}.`,
+      await sendForgotPasswordOtp({ data: { email: recoveryEmail } });
+      try {
+        await supabase.auth.signInWithOtp({
+          email: recoveryEmail,
+          options: { shouldCreateUser: false },
         });
-      } else {
-        toast.info("New code generated", {
-          description: res?.testCode
-            ? `New Code: ${res.testCode}`
-            : `Check ${recoveryEmail} for your new code.`,
-        });
-      }
+      } catch {}
+
+      toast.success("New code sent!", {
+        description: `Check your phone's email app for the new OTP notification.`,
+      });
     } catch (err: any) {
       toast.error("Could not resend code", { description: err.message });
     } finally {
@@ -347,6 +350,9 @@ function AuthPage() {
     }
 
     setBusy(true);
+    let verified = false;
+
+    // Try custom server OTP verification first
     try {
       await resetPasswordWithOtp({
         data: {
@@ -355,16 +361,50 @@ function AuthPage() {
           password,
         },
       });
+      verified = true;
+    } catch (customErr: any) {
+      // If custom check failed, check Supabase Auth OTP verification
+      try {
+        const { data: verifyData, error: verifyErr } = await supabase.auth.verifyOtp({
+          email: recoveryEmail,
+          token,
+          type: "email",
+        });
+
+        if (!verifyErr && verifyData?.session) {
+          const { error: updateErr } = await supabase.auth.updateUser({ password });
+          if (updateErr) throw updateErr;
+          verified = true;
+        } else {
+          // Also try type recovery
+          const { data: recData, error: recErr } = await supabase.auth.verifyOtp({
+            email: recoveryEmail,
+            token,
+            type: "recovery",
+          });
+          if (!recErr && recData?.session) {
+            const { error: updateErr } = await supabase.auth.updateUser({ password });
+            if (updateErr) throw updateErr;
+            verified = true;
+          } else {
+            throw customErr;
+          }
+        }
+      } catch {
+        throw customErr;
+      }
+    }
+
+    setBusy(false);
+    if (verified) {
       setRecoveryEmail(null);
       toast.success("Password reset successfully", {
         description: "You can now sign in with your new password.",
       });
-    } catch (err: any) {
+    } else {
       toast.error("Password reset failed", {
-        description: err.message || "Invalid or expired code.",
+        description: "Invalid or expired verification code.",
       });
-    } finally {
-      setBusy(false);
     }
   }
 

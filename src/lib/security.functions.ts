@@ -620,25 +620,60 @@ export const notifyAttendanceChange = createServerFn({ method: "POST" })
       result: "success",
     });
 
+    const workerUrl =
+      process.env["EMAIL_WORKER_URL"] ||
+      process.env["VITE_EMAIL_WORKER_URL"] ||
+      "https://sentinel-registration-email.sadiq8412pasha.workers.dev";
+
+    const action = data.action === "modified" ? "modified" : "deleted";
+
+    // 1. Send via Cloudflare Email Worker
+    try {
+      const workerRes = await fetch(workerUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          type: "attendance_change",
+          action,
+          attendance: data.attendance,
+          recipients,
+        }),
+      });
+
+      if (workerRes.ok) {
+        const workerResult = (await workerRes.json().catch(() => null)) as { delivered?: boolean } | null;
+        if (workerResult?.delivered) {
+          return { delivered: true, ip };
+        }
+      }
+    } catch (workerErr) {
+      console.warn("Cloudflare worker email call warning:", workerErr);
+    }
+
+    // 2. Fallback to direct Resend if API key is provided
     const apiKey = process.env["RESEND_API_KEY"];
     const from = process.env["SUPPORT_FROM_EMAIL"];
-    if (!apiKey || !from || !recipients.length) return { delivered: false, ip };
+    if (apiKey && from && recipients.length) {
+      const [primaryRecipient, ...blindCopyRecipients] = recipients;
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from,
+          to: [primaryRecipient],
+          ...(blindCopyRecipients.length ? { bcc: blindCopyRecipients } : {}),
+          subject: `Attendance record ${action}`,
+          text: `An attendance record was ${action}.\n\nName: ${data.attendance.name}\nRoll number: ${data.attendance.rollNumber}\nDate: ${data.attendance.date}\nStatus: ${data.attendance.status}\nActing IP address: ${ip}\n\nThis change has been recorded in the audit log.`,
+        }),
+      });
+      if (response.ok) {
+        return { delivered: true, ip };
+      }
+    }
 
-    const [primaryRecipient, ...blindCopyRecipients] = recipients;
-    const action = data.action === "modified" ? "modified" : "deleted";
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from,
-        to: [primaryRecipient],
-        ...(blindCopyRecipients.length ? { bcc: blindCopyRecipients } : {}),
-        subject: `Attendance record ${action}`,
-        text: `An attendance record was ${action}.\n\nName: ${data.attendance.name}\nRoll number: ${data.attendance.rollNumber}\nDate: ${data.attendance.date}\nStatus: ${data.attendance.status}\nActing IP address: ${ip}\n\nThis change has been recorded in the audit log.`,
-      }),
-    });
-    if (!response.ok) throw new Error("Attendance notification email could not be sent.");
-    return { delivered: true, ip };
+    return { delivered: false, ip };
   });
 
 export const setLocationConsent = createServerFn({ method: "POST" })

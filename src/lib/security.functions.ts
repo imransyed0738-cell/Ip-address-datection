@@ -290,43 +290,32 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
       // Ignored: service role key is not required for custom email server
     }
 
-    // Send OTP via Cloudflare Email Worker ("different server")
-    // Send OTP via Cloudflare Email Worker ("different server")
-    const workerUrl =
-      process.env["EMAIL_WORKER_URL"] ||
-      process.env["VITE_EMAIL_WORKER_URL"] ||
-      "https://sentinel-registration-email.sadiq8412pasha.workers.dev";
-
-    let delivered = false;
-    let workerError: string | undefined;
-
-    try {
-      const workerRes = await fetch(workerUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "forgot_password_otp",
-          email: normalizedEmail,
-          otp,
-        }),
-      });
-
-      const workerData = (await workerRes.json().catch(() => ({}))) as {
-        delivered?: boolean;
-        error?: string;
-      };
-
-      delivered = Boolean(workerData.delivered);
-      workerError = workerData.error;
-    } catch (err: any) {
-      console.warn("Cloudflare Email Worker dispatch:", err?.message || err);
-      workerError = err?.message || "Worker connection error";
-    }
+    // Dispatch OTP via multi-channel notification mailer (SMTP / Resend / Brevo / Cloudflare)
+    const { sendNotificationEmail } = await import("@/lib/mailer.server");
+    const mailResult = await sendNotificationEmail({
+      to: normalizedEmail,
+      subject: "Your Password Reset OTP - Sentinel Security",
+      text: `Hello,\n\nA password reset request was initiated for your Sentinel account.\n\nYour One-Time Password (OTP) code is:\n\n${otp}\n\nThis code is valid for 5 minutes. Do NOT share this code with anyone.\n\nRegards,\nSentinel Security Team`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+          <h2 style="color: #111827; margin-top: 0; font-size: 20px;">Password Reset Verification</h2>
+          <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">A password reset request was initiated for your Sentinel account.</p>
+          <div style="background: #f3f4f6; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
+            <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: #6b7280; margin-bottom: 6px;">One-Time Verification Code</div>
+            <div style="font-family: monospace; font-size: 32px; font-weight: 700; letter-spacing: 0.3em; color: #1e40af;">${otp}</div>
+          </div>
+          <p style="color: #6b7280; font-size: 13px; line-height: 1.5;">This code will expire in <strong>5 minutes</strong>. Do not share this code with anyone.</p>
+          <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
+          <p style="color: #9ca3af; font-size: 12px; margin-bottom: 0;">Sentinel Security Notification System</p>
+        </div>
+      `,
+    });
 
     return {
       sent: true,
-      delivered,
-      error: workerError,
+      delivered: mailResult.success,
+      provider: mailResult.provider,
+      error: mailResult.error,
     };
   });
 

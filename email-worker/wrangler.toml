@@ -1,0 +1,15 @@
+name = "sentinel-registration-email"
+main = "src/index.ts"
+compatibility_date = "2026-09-13"
+
+# The Worker independently verifies every Supabase access token and never accepts
+# a recipient from the browser. Replace * with the deployed app origin later for
+# an additional browser-level restriction.
+[vars]
+ALLOWED_ORIGIN = "*"
+SUPABASE_URL = "https://c--560bc521-8c58-4581-9b02-3f0c74aaa16e-prod.lovable.cloud"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_9rEJ_BX_oo0FIN9tu4EekQ_RYQYbJxD"
+
+# Add these using `wrangler secret put`; never commit them.
+# RESEND_API_KEY
+# REGISTRATION_FROM_EMAIL

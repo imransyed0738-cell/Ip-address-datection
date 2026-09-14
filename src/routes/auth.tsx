@@ -14,6 +14,7 @@ import {
   recordSecurityEvent,
   sendForgotPasswordOtp,
   resetPasswordWithOtp,
+  sendWelcomeRegistrationEmail,
 } from "@/lib/security.functions";
 
 export const Route = createFileRoute("/auth")({
@@ -234,23 +235,27 @@ function AuthPage() {
     }
 
     if (data.session) {
+      // Send welcome email via server-side mailer (SMTP → Resend → Brevo → Worker cascade)
       try {
-        const delivery = await sendRegistrationEmail(data.session.access_token);
+        const delivery = await sendWelcomeRegistrationEmail({ data: { email, fullName: full_name } });
         if (delivery.delivered) {
           toast.success("Welcome email sent", { description: `A message was sent to ${email}.` });
         } else {
-          toast.warning("Account created, but email was not delivered", {
-            description: delivery.reason,
+          toast.warning("Account created", {
+            description: delivery.error ?? "Welcome email could not be delivered right now.",
           });
         }
       } catch {
-        toast.warning("Account created, but email was not delivered", {
-          description: "The email server could not be reached. Please try again later.",
+        toast.warning("Account created", {
+          description: "Welcome email could not be delivered. You can still sign in.",
         });
       }
       await continueAfterPassword();
       return;
     }
+
+    // No session yet — email confirmation flow; send welcome email in background
+    sendWelcomeRegistrationEmail({ data: { email, fullName: full_name } }).catch(() => null);
 
     setPendingEmail(email);
     setResendIn(60);

@@ -128,6 +128,11 @@ const attendanceChangeInput = z.object({
   }),
 });
 
+const welcomeEmailInput = z.object({
+  email: z.string().trim().email("Enter a valid email address"),
+  fullName: z.string().trim().optional(),
+});
+
 function normalizeMobile(value: string): string {
   return value.replace(/\D/g, "");
 }
@@ -309,6 +314,44 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
           <p style="color: #9ca3af; font-size: 12px; margin-bottom: 0;">Sentinel Security Notification System</p>
         </div>
       `,
+    });
+
+    return {
+      sent: true,
+      delivered: mailResult.success,
+      provider: mailResult.provider,
+      error: mailResult.error,
+    };
+  });
+
+/** Dispatches a welcome email notification to newly registered users */
+export const sendWelcomeRegistrationEmail = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => welcomeEmailInput.parse(d))
+  .handler(async ({ data }) => {
+    const { sendNotificationEmail } = await import("@/lib/mailer.server");
+    const name = data.fullName?.trim() || "there";
+    const subject = "Welcome to Sentinel Security - Account Created";
+    const text = `Hello ${name},\n\nYour Sentinel Security account has been successfully created for ${data.email}.\n\nYou can now sign in to your dashboard.\n\nBest regards,\nSentinel Security Team`;
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+        <h2 style="color: #111827; margin-top: 0;">Welcome to Sentinel Security!</h2>
+        <p style="color: #4b5563; font-size: 14px; line-height: 1.6;">Hello <strong>${name}</strong>,</p>
+        <p style="color: #4b5563; font-size: 14px; line-height: 1.6;">Your Sentinel Security account has been successfully created for <strong>${data.email}</strong>.</p>
+        <div style="margin: 20px 0; padding: 14px 18px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; color: #166534; font-size: 14px;">
+          ✓ Your account registration is complete and ready to use.
+        </div>
+        <p style="color: #6b7280; font-size: 13px; line-height: 1.5;">You can now sign in to access your security dashboard and manage your account.</p>
+        <p style="color: #6b7280; font-size: 12px;">If you did not create this account, please contact our security team immediately.</p>
+        <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
+        <p style="color: #9ca3af; font-size: 12px; margin-bottom: 0;">Sentinel Security Notification System</p>
+      </div>
+    `;
+
+    const mailResult = await sendNotificationEmail({
+      to: data.email,
+      subject,
+      text,
+      html,
     });
 
     return {

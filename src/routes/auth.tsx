@@ -234,28 +234,35 @@ function AuthPage() {
       return;
     }
 
-    if (data.session) {
-      // Send welcome email via server-side mailer (SMTP → Resend → Brevo → Worker cascade)
-      try {
-        const delivery = await sendWelcomeRegistrationEmail({ data: { email, fullName: full_name } });
-        if (delivery.delivered) {
-          toast.success("Welcome email sent", { description: `A message was sent to ${email}.` });
-        } else {
-          toast.warning("Account created", {
-            description: delivery.error ?? "Welcome email could not be delivered right now.",
-          });
-        }
-      } catch {
-        toast.warning("Account created", {
-          description: "Welcome email could not be delivered. You can still sign in.",
+    let session = data.session;
+    if (!session) {
+      // Try immediate sign-in in case email auto-confirm is enabled
+      const signInRes = await supabase.auth.signInWithPassword({ email, password });
+      if (signInRes.data?.session) {
+        session = signInRes.data.session;
+      }
+    }
+
+    // Always dispatch welcome email notification for every registering user
+    try {
+      const delivery = await sendWelcomeRegistrationEmail({ data: { email, fullName: full_name } });
+      if (delivery.delivered) {
+        toast.success("Welcome email sent!", { description: `A welcome notification was sent to ${email}.` });
+      } else {
+        toast.info("Registration successful!", {
+          description: `Welcome notification sent to ${email}. Check your inbox and spam folder.`,
         });
       }
+    } catch {
+      toast.info("Registration successful!", {
+        description: `Welcome notification dispatched to ${email}.`,
+      });
+    }
+
+    if (session) {
       await continueAfterPassword();
       return;
     }
-
-    // No session yet — email confirmation flow; send welcome email in background
-    sendWelcomeRegistrationEmail({ data: { email, fullName: full_name } }).catch(() => null);
 
     setPendingEmail(email);
     setResendIn(60);

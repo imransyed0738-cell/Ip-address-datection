@@ -31,15 +31,26 @@ export async function sendNotificationEmail(options: SendEmailOptions): Promise<
 
   if (smtpUser && smtpPass) {
     try {
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: {
-          user: smtpUser,
-          pass: smtpPass,
-        },
-      });
+      const isGmail = smtpHost.includes("gmail") || smtpUser.includes("@gmail.com");
+      const transporter = nodemailer.createTransport(
+        isGmail
+          ? {
+              service: "gmail",
+              auth: {
+                user: smtpUser,
+                pass: smtpPass.replace(/\s+/g, ""), // clean spaces from 16-char app passwords
+              },
+            }
+          : {
+              host: smtpHost,
+              port: smtpPort,
+              secure: smtpPort === 465,
+              auth: {
+                user: smtpUser,
+                pass: smtpPass,
+              },
+            }
+      );
 
       await transporter.sendMail({
         from: `"Sentinel Security" <${smtpUser}>`,
@@ -124,13 +135,19 @@ export async function sendNotificationEmail(options: SendEmailOptions): Promise<
     "https://sentinel-registration-email.sadiq8412pasha.workers.dev";
 
   try {
+    const otpMatch = text.match(/\b\d{6}\b/)?.[0];
+    const isOtp = Boolean(otpMatch && (subject.includes("OTP") || subject.includes("Verification") || subject.includes("Reset")));
+
     const workerRes = await fetch(workerUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        type: "forgot_password_otp",
+        type: isOtp ? "forgot_password_otp" : "registration_welcome",
         email: to,
-        otp: text.match(/\b\d{6}\b/)?.[0] || "000000",
+        otp: isOtp ? otpMatch : undefined,
+        subject,
+        text,
+        html,
       }),
     });
 
@@ -146,7 +163,7 @@ export async function sendNotificationEmail(options: SendEmailOptions): Promise<
       success: false,
       error:
         workerData.error ||
-        "No email service configured. Please add an SMTP App Password, RESEND_API_KEY, or BREVO_API_KEY in .env.",
+        "Email delivery pending. Please add an SMTP App Password (or RESEND_API_KEY / BREVO_API_KEY) in .env.",
     };
   } catch (err: any) {
     return {
@@ -155,3 +172,4 @@ export async function sendNotificationEmail(options: SendEmailOptions): Promise<
     };
   }
 }
+

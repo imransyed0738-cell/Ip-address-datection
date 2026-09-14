@@ -213,10 +213,24 @@ export default {
     }
 
     // 3. REGISTRATION WELCOME NOTIFICATION
-    const regSubject = "Welcome to Sentinel Secure Banking";
-    const regText = `Hello ${authUserName},\n\nYour Sentinel account has been successfully created for ${targetEmails[0]}.\n\nIf you did not create this account, please contact support immediately.\n\nSentinel Security Team`;
+    const regSubject = bodyJson.subject || "Welcome to Sentinel Security - Account Created";
+    const regText = bodyJson.text || `Hello ${authUserName},\n\nYour Sentinel Security account has been successfully created for ${targetEmails[0]}.\n\nYou can now sign in to your dashboard.\n\nBest regards,\nSentinel Security Team`;
+    const regHtml = bodyJson.html || `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+        <h2 style="color: #111827; margin-top: 0;">Welcome to Sentinel Security!</h2>
+        <p style="color: #4b5563; font-size: 14px; line-height: 1.6;">Hello <strong>${authUserName}</strong>,</p>
+        <p style="color: #4b5563; font-size: 14px; line-height: 1.6;">Your Sentinel Security account has been successfully created for <strong>${targetEmails[0]}</strong>.</p>
+        <div style="margin: 20px 0; padding: 14px 18px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; color: #166534; font-size: 14px;">
+          ✓ Your account registration is complete and ready to use.
+        </div>
+        <p style="color: #6b7280; font-size: 13px; line-height: 1.5;">You can now sign in to access your security dashboard and manage your account.</p>
+        <p style="color: #6b7280; font-size: 12px;">If you did not create this account, please contact our security team immediately.</p>
+        <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
+        <p style="color: #9ca3af; font-size: 12px; margin-bottom: 0;">Sentinel Security Notification System</p>
+      </div>
+    `;
 
-    const result = await sendEmail(env, targetEmails, regSubject, regText);
+    const result = await sendEmail(env, targetEmails, regSubject, regText, regHtml);
     return response(request, env, { delivered: result.success, recipients: targetEmails, error: result.error });
   },
 };

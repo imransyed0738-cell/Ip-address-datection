@@ -138,3 +138,22 @@
   font-weight: 600;
   color: var(--color-muted-foreground);
 }
+
+@media print {
+  body {
+    background: white;
+    color: black;
+  }
+
+  main {
+    width: 100%;
+  }
+
+  .print\:hidden {
+    display: none !important;
+  }
+
+  section {
+    break-inside: avoid;
+  }
+}

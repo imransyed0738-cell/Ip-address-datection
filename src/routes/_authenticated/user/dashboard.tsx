@@ -4,18 +4,23 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   Activity,
   Bell,
+  ClipboardCheck,
+  Crosshair,
   Globe2,
   Lock,
+  Mail,
   MapPin,
+  Settings,
   ShieldCheck,
   Smartphone,
   UserCheck,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,9 +32,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { supabase } from "@/integrations/supabase/client";
+import { getDeviceInfo } from "@/lib/device";
 import {
   getConnectionInfo,
+  lookupIpAddress,
+  lookupMobileDevices,
+  sendMobileTrackingConsent,
   lockAccount,
+  recordSecurityEvent,
   terminateOtherSessions,
 } from "@/lib/security.functions";
 import {
@@ -67,8 +77,51 @@ function Dashboard() {
   const alerts = useAlerts();
   const devices = useDevices();
   const [confirmLock, setConfirmLock] = useState(false);
+  const [ipToTrack, setIpToTrack] = useState("");
+  const [mobileToTrack, setMobileToTrack] = useState("");
+  const [consentEmail, setConsentEmail] = useState<string | null>(null);
 
   const conn = useQuery({ queryKey: ["conn"], queryFn: () => getConnectionInfo() });
+  const lookupFn = useServerFn(lookupIpAddress);
+  const ipLookup = useMutation({
+    mutationFn: (ip: string) => lookupFn({ data: { ip } }),
+    onError: (error: Error) => toast.error("IP lookup failed", { description: error.message }),
+  });
+  const mobileLookupFn = useServerFn(lookupMobileDevices);
+  const sendConsentFn = useServerFn(sendMobileTrackingConsent);
+  const sendConsent = useMutation({
+    mutationFn: (mobile: string) => sendConsentFn({ data: { mobile } }),
+    onSuccess: (result) => {
+      setConsentEmail(result.sentTo);
+      toast.success("Verification link sent", { description: `Sent to ${result.sentTo}` });
+    },
+    onError: (error: Error) => toast.error("Could not send verification link", { description: error.message }),
+  });
+  const mobileLookup = useMutation({
+    mutationFn: (mobile: string) => mobileLookupFn({ data: { mobile } }),
+    onSuccess: async (lookupResult) => {
+      try {
+        await eventFn({
+          data: {
+            eventType: "SECURITY_ALERT",
+            device: getDeviceInfo(),
+            note: `Mobile device lookup: ${lookupResult.devices.length} registered device${lookupResult.devices.length === 1 ? "" : "s"} found`,
+          },
+        });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["devices"] }),
+          queryClient.invalidateQueries({ queryKey: ["security_events"] }),
+          queryClient.invalidateQueries({ queryKey: ["security_alerts"] }),
+        ]);
+        toast.success("Mobile lookup added to security activity");
+      } catch (error) {
+        toast.error("Lookup succeeded, but activity could not be updated", {
+          description: error instanceof Error ? error.message : "Try refreshing the dashboard.",
+        });
+      }
+    },
+    onError: (error: Error) => toast.error("Mobile lookup failed", { description: error.message }),
+  });
 
   const mfa = useQuery({
     queryKey: ["mfa"],
@@ -88,6 +141,56 @@ function Dashboard() {
 
   const lockFn = useServerFn(lockAccount);
   const terminateFn = useServerFn(terminateOtherSessions);
+  const eventFn = useServerFn(recordSecurityEvent);
+  const currentKey = typeof window === "undefined" ? "" : getDeviceInfo().deviceKey;
+
+  useEffect(() => {
+    let active = true;
+    async function ensureCurrentDevice() {
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        if (!auth?.user || !active) return;
+        const info = getDeviceInfo();
+
+        const { data: existingDevice } = await supabase
+          .from("devices")
+          .select("id")
+          .eq("user_id", auth.user.id)
+          .eq("device_key", info.deviceKey)
+          .maybeSingle();
+
+        const { data: existingEvents } = await supabase
+          .from("security_events")
+          .select("id")
+          .eq("user_id", auth.user.id)
+          .limit(1);
+
+        if ((!existingDevice || !existingEvents?.length) && active) {
+          await eventFn({
+            data: {
+              eventType: existingDevice ? "LOGIN_SUCCESS" : "NEW_DEVICE",
+              device: info,
+              note: "Active session monitoring",
+            },
+          });
+        }
+
+        if (active) {
+          await Promise.all([
+            queryClient.refetchQueries({ queryKey: ["devices"] }),
+            queryClient.refetchQueries({ queryKey: ["security_events"] }),
+            queryClient.refetchQueries({ queryKey: ["security_alerts"] }),
+          ]);
+        }
+      } catch (err) {
+        console.warn("Device monitoring check:", err);
+      }
+    }
+    void ensureCurrentDevice();
+    return () => {
+      active = false;
+    };
+  }, [eventFn, queryClient]);
 
   const lockMutation = useMutation({
     mutationFn: () => lockFn(),
@@ -130,6 +233,11 @@ function Dashboard() {
           </h1>
         </div>
         <div className="flex gap-2">
+          <Button asChild variant="outline">
+            <Link to="/user/security">
+              <Settings className="mr-2 size-4" /> Settings
+            </Link>
+          </Button>
           <Button variant="outline" onClick={() => terminateMutation.mutate()} disabled={terminateMutation.isPending}>
             Sign out other sessions
           </Button>
@@ -162,7 +270,184 @@ function Dashboard() {
           value={events.data?.[0] ? prettyEvent(events.data[0].event_type) : "No events yet"}
           detail={events.data?.[0] ? formatWhen(events.data[0].created_at) : "View login and location events"}
         />
+        <QuickLink
+          to="/user/attendance"
+          icon={ClipboardCheck}
+          label="Attendance dashboard"
+          value="Manual check-in"
+          detail="Record your attendance for any date"
+        />
       </div>
+
+      <section className="panel mt-6 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Crosshair className="size-5 text-accent" />
+              <p className="label-caps">IP tracker</p>
+            </div>
+            <h2 className="mt-2 text-lg font-semibold">Check a public IP address</h2>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Get the approximate public location and network details for an IPv4 or IPv6 address.
+              A device name is shown only when it matches one of your registered devices.
+            </p>
+          </div>
+        </div>
+
+        <form
+          className="mt-5 flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const ip = ipToTrack.trim();
+            if (ip) ipLookup.mutate(ip);
+          }}
+        >
+          <Input
+            className="font-mono sm:max-w-md"
+            placeholder="e.g. 8.8.8.8"
+            aria-label="Public IP address"
+            value={ipToTrack}
+            onChange={(event) => setIpToTrack(event.target.value)}
+          />
+          <Button type="submit" disabled={!ipToTrack.trim() || ipLookup.isPending}>
+            <Crosshair className="mr-2 size-4" />
+            {ipLookup.isPending ? "Checking…" : "Track IP"}
+          </Button>
+        </form>
+
+        {ipLookup.data && (
+          <div className="mt-5 grid gap-3 border-t border-border pt-5 sm:grid-cols-2 lg:grid-cols-4">
+            <LookupDetail
+              label="Device name"
+              value={ipLookup.data.deviceName ?? "Unknown from public IP"}
+            />
+            <LookupDetail label="IP address" value={ipLookup.data.ip} mono />
+            <LookupDetail label="Public address (approx.)" value={ipLookup.data.publicAddress} />
+            <LookupDetail
+              label="Network"
+              value={ipLookup.data.organization ?? "Organization unavailable"}
+            />
+          </div>
+        )}
+        {ipLookup.isError && (
+          <p className="mt-4 text-sm text-destructive" role="alert">
+            {ipLookup.error.message}
+          </p>
+        )}
+      </section>
+
+      <section className="panel mt-6 p-5">
+        <div className="flex items-start gap-3">
+          <Smartphone className="mt-0.5 size-5 text-accent" />
+          <div>
+            <p className="label-caps">Mobile tracker</p>
+            <h2 className="mt-2 text-lg font-semibold">Find your registered mobile devices</h2>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Enter a mobile number and send a consent link to the signed-in account email. After
+              approval, return here to view its registered device names, location, and public IP.
+            </p>
+            <Button asChild className="mt-4" variant="outline" size="sm">
+              <Link to="/auth">Create your verified security account</Link>
+            </Button>
+          </div>
+        </div>
+
+        <form
+          className="mt-5 flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const mobile = mobileToTrack.trim();
+            if (mobile) mobileLookup.mutate(mobile);
+          }}
+        >
+          <Input
+            className="sm:max-w-md"
+            type="tel"
+            placeholder="Your account mobile number"
+            aria-label="Account mobile number"
+            value={mobileToTrack}
+            onChange={(event) => setMobileToTrack(event.target.value)}
+          />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!mobileToTrack.trim() || sendConsent.isPending}
+              onClick={() => sendConsent.mutate(mobileToTrack.trim())}
+            >
+              <Mail className="mr-2 size-4" />
+              {sendConsent.isPending ? "Sending…" : "Send verification link"}
+            </Button>
+            <Button type="submit" disabled={!mobileToTrack.trim() || mobileLookup.isPending}>
+              <Smartphone className="mr-2 size-4" />
+              {mobileLookup.isPending ? "Checking…" : "Track mobile"}
+            </Button>
+          </div>
+        </form>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Use the number registered on your verified account. New users can create an account,
+          confirm their email, and then track their own device.
+        </p>
+        {consentEmail && (
+          <p className="mt-2 text-sm text-success" role="status">
+            Verification link sent to <strong>{consentEmail}</strong>.
+          </p>
+        )}
+
+        {mobileLookup.data && (
+          <div className="mt-5 border-t border-border">
+            <div className="grid gap-3 py-4 sm:grid-cols-2">
+              <LookupDetail
+                label="Last consented location"
+                value={mobileLookup.data.location?.label ?? "Location sharing is disabled"}
+              />
+              <LookupDetail
+                label="Location updated"
+                value={
+                  mobileLookup.data.location?.updatedAt
+                    ? formatWhen(mobileLookup.data.location.updatedAt)
+                    : "No location update available"
+                }
+              />
+            </div>
+            {mobileLookup.data.location?.latitude != null &&
+              mobileLookup.data.location.longitude != null && (
+                <a
+                  className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-accent hover:underline"
+                  href={`https://www.google.com/maps?q=${mobileLookup.data.location.latitude},${mobileLookup.data.location.longitude}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <MapPin className="size-4" /> Open location on map
+                </a>
+              )}
+            <div className="divide-y divide-border border-t border-border">
+              {mobileLookup.data.devices.length === 0 && (
+                <p className="py-4 text-sm text-muted-foreground">No registered devices found.</p>
+              )}
+              {mobileLookup.data.devices.map((device) => (
+                <div key={device.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-3 text-sm">
+                  <span className="font-medium">{device.device_name ?? "Unnamed device"}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {device.device_type ?? "Unknown"} · {device.browser ?? "—"} · {device.os ?? "—"}
+                  </span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    Public IP: {device.last_ip ?? "Unknown"}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {device.last_seen ? formatWhen(device.last_seen) : "Last seen unknown"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {mobileLookup.isError && (
+          <p className="mt-4 text-sm text-destructive" role="alert">
+            {mobileLookup.error.message}
+          </p>
+        )}
+      </section>
 
       <section className="panel mt-6 border-l-4 border-accent px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -239,33 +524,114 @@ function Dashboard() {
         />
       </div>
 
-      <section className="panel mt-6">
-        <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <h2 className="text-sm font-semibold">Live security activity</h2>
-          <Link to="/user/security/activity" className="text-xs text-accent hover:underline">
-            View all
-          </Link>
-        </div>
-        <ul className="divide-y divide-border">
-          {(events.data ?? []).slice(0, 6).map((e) => (
-            <li key={e.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-sm">
-              <span className="font-medium">{prettyEvent(e.event_type)}</span>
-              <span className="font-mono text-xs text-muted-foreground">{e.ip_address ?? "—"}</span>
-              <span className="text-xs text-muted-foreground">
-                {e.device_type ?? "Unknown"} · {e.browser ?? "—"}
-              </span>
-              <span className="text-xs text-muted-foreground">{e.location_label ?? "Unknown"}</span>
-              <span className="ml-auto text-xs text-muted-foreground">{formatWhen(e.created_at)}</span>
-              <RiskPill level={e.risk_level} />
-            </li>
-          ))}
-          {events.data?.length === 0 && (
-            <li className="px-5 py-8 text-center text-sm text-muted-foreground">
-              No security events recorded yet.
-            </li>
-          )}
-        </ul>
-      </section>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <section className="panel">
+          <div className="flex items-center justify-between border-b border-border px-5 py-3">
+            <h2 className="text-sm font-semibold">Registered devices</h2>
+            <Link to="/user/devices" className="text-xs text-accent hover:underline">
+              View all
+            </Link>
+          </div>
+          <ul className="divide-y divide-border">
+            {devices.isLoading && (
+              <li className="px-5 py-8 text-center text-sm text-muted-foreground">
+                Loading devices…
+              </li>
+            )}
+            {devices.isError && (
+              <li className="px-5 py-8 text-center text-sm text-destructive">
+                Could not load devices.
+              </li>
+            )}
+            {!devices.isLoading &&
+              !devices.isError &&
+              (devices.data ?? []).slice(0, 6).map((d) => {
+                const isCurrent = d.device_key === currentKey;
+                return (
+                  <li
+                    key={d.id}
+                    className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-sm"
+                  >
+                    <span className="font-medium">{d.device_name || "Device"}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {d.device_type ?? "Unknown"} · {d.browser ?? "—"}
+                    </span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {d.last_ip ?? "—"}
+                    </span>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {d.last_seen ? formatWhen(d.last_seen as string) : "—"}
+                    </span>
+                    {isCurrent && (
+                      <span className="rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success">
+                        THIS DEVICE
+                      </span>
+                    )}
+                    {d.trusted && (
+                      <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-semibold text-accent">
+                        TRUSTED
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            {!devices.isLoading && !devices.isError && devices.data?.length === 0 && (
+              <li className="px-5 py-8 text-center text-sm text-muted-foreground">
+                No devices registered yet.
+              </li>
+            )}
+          </ul>
+        </section>
+
+        <section className="panel">
+          <div className="flex items-center justify-between border-b border-border px-5 py-3">
+            <h2 className="text-sm font-semibold">Live security activity</h2>
+            <Link to="/user/security/activity" className="text-xs text-accent hover:underline">
+              View all
+            </Link>
+          </div>
+          <ul className="divide-y divide-border">
+            {events.isLoading && (
+              <li className="px-5 py-8 text-center text-sm text-muted-foreground">
+                Loading activity…
+              </li>
+            )}
+            {events.isError && (
+              <li className="px-5 py-8 text-center text-sm text-destructive">
+                Could not load security activity.
+              </li>
+            )}
+            {!events.isLoading &&
+              !events.isError &&
+              (events.data ?? []).slice(0, 6).map((e) => (
+                <li
+                  key={e.id}
+                  className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3 text-sm"
+                >
+                  <span className="font-medium">{prettyEvent(e.event_type)}</span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {e.ip_address ?? "—"}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {e.device_type ?? "Unknown"} · {e.browser ?? "—"}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {e.location_label ?? "Unknown"}
+                  </span>
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {formatWhen(e.created_at)}
+                  </span>
+                  <RiskPill level={e.risk_level} />
+                </li>
+              ))}
+            {!events.isLoading && !events.isError && events.data?.length === 0 && (
+              <li className="px-5 py-8 text-center text-sm text-muted-foreground">
+                No security events recorded yet.
+              </li>
+            )}
+          </ul>
+        </section>
+      </div>
 
       <AlertDialog open={confirmLock} onOpenChange={setConfirmLock}>
         <AlertDialogContent>
@@ -286,6 +652,23 @@ function Dashboard() {
   );
 }
 
+function LookupDetail({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="label-caps">{label}</p>
+      <p className={`mt-1 break-words text-sm font-medium ${mono ? "font-mono" : ""}`}>{value}</p>
+    </div>
+  );
+}
+
 function QuickLink({
   to,
   icon: Icon,
@@ -294,7 +677,7 @@ function QuickLink({
   detail,
   tone = "muted",
 }: {
-  to: "/user/security/location" | "/user/devices" | "/user/security/activity";
+  to: "/user/security/location" | "/user/devices" | "/user/security/activity" | "/user/attendance";
   icon: typeof MapPin;
   label: string;
   value: string;

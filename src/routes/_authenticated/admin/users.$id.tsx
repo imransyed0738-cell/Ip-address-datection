@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, FileDown } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -45,7 +45,7 @@ function Investigation() {
   const qc = useQueryClient();
   const [note, setNote] = useState("");
 
-  const { data, isLoading } = useQuery({
+  const { data, error, isError, isLoading, refetch } = useQuery({
     queryKey: ["admin", "user", id],
     queryFn: () => detail({ data: { userId: id } }),
   });
@@ -62,28 +62,106 @@ function Investigation() {
   });
 
   const p = data?.profile as any;
+  const activity = data?.events ?? [];
+  const signIns = activity.filter((event: any) =>
+    ["LOGIN_SUCCESS", "NEW_DEVICE"].includes(event.event_type),
+  );
+  const signOuts = activity.filter((event: any) => event.event_type === "LOGOUT");
+  const ipLookups = activity.filter((event: any) => event.event_type === "IP_LOOKUP");
+  const lastSignIn = signIns[0];
+  const lastSignOut = signOuts[0];
 
   return (
     <AdminShell>
-      <Link to="/admin/users" className="mb-3 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+      <Link
+        to="/admin/users"
+        className="mb-3 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground print:hidden"
+      >
         <ArrowLeft className="size-4" /> Back to users
       </Link>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading account…</p>}
 
-      {p && (
+      {isError && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          <p className="text-sm font-medium text-destructive">Could not open this investigation.</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {error instanceof Error ? error.message : "The account security details could not be loaded."}
+          </p>
+          <Button className="mt-3" size="sm" variant="outline" onClick={() => void refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+
+      {!isLoading && !isError && !p && (
+        <div className="rounded-lg border border-border bg-card p-6">
+          <p className="text-sm font-medium">User account not found.</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Return to the users list and choose an active account to investigate.
+          </p>
+          <Button className="mt-4" size="sm" variant="outline" asChild>
+            <Link to="/admin/users">Back to users</Link>
+          </Button>
+        </div>
+      )}
+
+      {p && !isError && (
         <div className="space-y-5">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-xl font-semibold">{p.full_name ?? "Unnamed account"}</h1>
-            {data?.risk && <RiskBadge score={data.risk.score} level={data.risk.level} />}
-            {p.account_locked && (
-              <span className="rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive">
-                Locked
-              </span>
-            )}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-xl font-semibold">{p.full_name ?? "Unnamed account"}</h1>
+              {data?.risk && <RiskBadge score={data.risk.score} level={data.risk.level} />}
+              {p.account_locked && (
+                <span className="rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive">
+                  Locked
+                </span>
+              )}
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="print:hidden"
+              onClick={() => window.print()}
+              title="Open the activity report in the print dialog, then choose Save as PDF"
+            >
+              <FileDown className="mr-2 size-4" />
+              Download PDF
+            </Button>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
+            <Panel title="Activity summary">
+              <dl className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <dt className="text-muted-foreground">Total sign-ins</dt>
+                  <dd className="mt-1 text-lg font-semibold">{signIns.length}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Total sign-outs</dt>
+                  <dd className="mt-1 text-lg font-semibold">{signOuts.length}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">IP addresses checked</dt>
+                  <dd className="mt-1 text-lg font-semibold">{ipLookups.length}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Last sign-in</dt>
+                  <dd className="mt-1 text-xs">{lastSignIn ? formatWhen(lastSignIn.created_at) : "—"}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Last sign-out</dt>
+                  <dd className="mt-1 text-xs">{lastSignOut ? formatWhen(lastSignOut.created_at) : "—"}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Last IP checked</dt>
+                  <dd className="mt-1 break-all font-mono text-xs">
+                    {ipLookups[0]?.metadata?.tracked_ip ?? ipLookups[0]?.ip_address ?? "—"}
+                  </dd>
+                </div>
+              </dl>
+            </Panel>
+
             <Panel title="Account information">
               <dl className="grid grid-cols-2 gap-2 text-sm">
                 <dt className="text-muted-foreground">Email</dt>
@@ -185,25 +263,30 @@ function Investigation() {
             </Panel>
           </div>
 
-          <Panel title="Recent security events">
+            <Panel title="User activity">
+              <p className="mb-3 text-xs text-muted-foreground">
+                Sign-ins, security changes, device activity, and reported events for this account.
+              </p>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="text-left text-xs uppercase text-muted-foreground">
                   <tr>
                     <th className="py-2">When</th>
                     <th className="py-2">Event</th>
-                    <th className="py-2">IP</th>
+                    <th className="py-2">IP / checked address</th>
                     <th className="py-2">Device</th>
                     <th className="py-2">Region</th>
                     <th className="py-2">Risk</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(data?.events ?? []).slice(0, 50).map((e: any) => (
+                  {(data?.events ?? []).map((e: any) => (
                     <tr key={e.id} className="border-t border-border">
                       <td className="whitespace-nowrap py-2">{formatWhen(e.created_at)}</td>
                       <td className="py-2">{prettyEvent(e.event_type)}</td>
-                      <td className="py-2 font-mono text-xs">{e.ip_address ?? "—"}</td>
+                      <td className="py-2 font-mono text-xs">
+                        {e.metadata?.tracked_ip ?? e.ip_address ?? "—"}
+                      </td>
                       <td className="py-2">{[e.browser, e.os].filter(Boolean).join(" · ") || "—"}</td>
                       <td className="py-2">{e.location_label ?? "—"}</td>
                       <td className="py-2">

@@ -113,6 +113,39 @@ export type Database = {
         }
         Relationships: []
       }
+      mobile_tracking_requests: {
+        Row: {
+          approved_at: string | null
+          created_at: string
+          expires_at: string
+          id: string
+          mobile: string
+          requester_id: string
+          status: string
+          token_hash: string
+        }
+        Insert: {
+          approved_at?: string | null
+          created_at?: string
+          expires_at: string
+          id?: string
+          mobile: string
+          requester_id: string
+          status?: string
+          token_hash: string
+        }
+        Update: {
+          approved_at?: string | null
+          created_at?: string
+          expires_at?: string
+          id?: string
+          mobile?: string
+          requester_id?: string
+          status?: string
+          token_hash?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           account_locked: boolean

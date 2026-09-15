@@ -4,6 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 
 import { AdminShell, RiskBadge } from "@/components/AdminShell";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { adminListUsers } from "@/lib/admin.functions";
 import { useAdminRealtime } from "@/lib/admin-realtime";
@@ -29,7 +30,10 @@ export const Route = createFileRoute("/_authenticated/admin/users")({
 function AdminUsers() {
   const load = useServerFn(adminListUsers);
   const realtimeStatus = useAdminRealtime();
-  const { data, isLoading } = useQuery({ queryKey: ["admin", "users"], queryFn: () => load() });
+  const { data, error, isError, isLoading, refetch } = useQuery({
+    queryKey: ["admin", "users"],
+    queryFn: () => load(),
+  });
   const [q, setQ] = useState("");
 
   const rows = (data ?? []).filter((u: any) =>
@@ -82,6 +86,17 @@ function AdminUsers() {
                 </td>
               </tr>
             )}
+            {isError && (
+              <tr>
+                <td colSpan={9} className="px-3 py-6 text-center">
+                  <p className="text-sm text-destructive">Could not load users and security data.</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{error.message}</p>
+                  <Button className="mt-3" variant="outline" size="sm" onClick={() => void refetch()}>
+                    Try again
+                  </Button>
+                </td>
+              </tr>
+            )}
             {rows.map((u: any) => (
               <tr key={u.id} className="border-t border-border">
                 <td className="px-3 py-2">
@@ -104,23 +119,28 @@ function AdminUsers() {
                 <td className="px-3 py-2 font-mono text-xs">{u.lastIp ?? "—"}</td>
                 <td className="px-3 py-2 tabular-nums">{u.deviceCount}</td>
                 <td className="px-3 py-2 text-xs">
-                  {u.location_consent ? (u.last_location_label ?? "Consented, no fix yet") : "No consent"}
+                  {u.location_consent
+                    ? (u.last_location_label ??
+                      ([u.city, u.country].filter(Boolean).join(", ") || "Consented, no fix yet"))
+                    : "No consent"}
                 </td>
                 <td className="px-3 py-2">
                   <RiskBadge score={u.riskScore} level={u.riskLevel} />
                 </td>
                 <td className="px-3 py-2">
-                  <Link
-                    to="/admin/users/$id"
-                    params={{ id: u.id }}
+                  <a
+                    href={`/admin/users/${u.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Open investigation for ${u.full_name ?? u.email}`}
                     className="text-primary underline-offset-2 hover:underline"
                   >
-                    Investigate
-                  </Link>
+                    Open investigation
+                  </a>
                 </td>
               </tr>
             ))}
-            {!isLoading && !rows.length && (
+            {!isLoading && !isError && !rows.length && (
               <tr>
                 <td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">
                   No users match this search.

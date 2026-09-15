@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { MapPin } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 
 import { AppShell } from "@/components/AppShell";
@@ -39,7 +39,6 @@ function LocationPage() {
   const submitFn = useServerFn(submitLocation);
   const eventFn = useServerFn(recordSecurityEvent);
   const watchRef = useRef<number | null>(null);
-  const [busy, setBusy] = useState(false);
 
   const consent = Boolean(profile.data?.location_consent);
   const unread = (alerts.data ?? []).filter((a) => !a.read).length;
@@ -122,41 +121,6 @@ function LocationPage() {
     },
   });
 
-  async function refreshNow() {
-    if (!window.isSecureContext || !navigator.geolocation) {
-      toast.error("Location is unavailable", {
-        description: "Use HTTPS or localhost and enable your device location services.",
-      });
-      return;
-    }
-    setBusy(true);
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          await submitFn({
-            data: { latitude: pos.coords.latitude, longitude: pos.coords.longitude },
-          });
-          await queryClient.invalidateQueries({ queryKey: ["profile"] });
-          toast.success("Location updated");
-        } catch (e) {
-          toast.error("Update rejected", { description: (e as Error).message });
-        } finally {
-          setBusy(false);
-        }
-      },
-      (err) => {
-        setBusy(false);
-        toast.error("Could not read location", {
-          description:
-            err.code === GeolocationPositionError.PERMISSION_DENIED
-              ? "Location permission was denied. Allow it in your browser settings and try again."
-              : err.message,
-        });
-      },
-      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 20_000 },
-    );
-  }
-
   const lat = profile.data?.last_lat as number | null | undefined;
   const lng = profile.data?.last_lng as number | null | undefined;
 
@@ -219,25 +183,20 @@ function LocationPage() {
           />
         </dl>
 
-        {consent && (
-          <Button className="mt-6" onClick={refreshNow} disabled={busy}>
-            <MapPin className="mr-2 size-4" />
-            {busy ? "Reading device location…" : "Update location now"}
+        {consent && lat != null && lng != null && (
+          <Button asChild className="mt-6" variant="outline">
+            <a
+              href={`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <MapPin className="mr-2 size-4" />
+              Open map
+            </a>
           </Button>
         )}
       </div>}
 
-      {consent && lat != null && lng != null && (
-        <div className="panel mt-6 overflow-hidden">
-          <iframe
-            title="Approximate security location"
-            className="h-80 w-full border-0"
-            src={`https://www.openstreetmap.org/export/embed.html?bbox=${lng - 0.03}%2C${
-              lat - 0.02
-            }%2C${lng + 0.03}%2C${lat + 0.02}&layer=mapnik&marker=${lat}%2C${lng}`}
-          />
-        </div>
-      )}
     </AppShell>
   );
 }

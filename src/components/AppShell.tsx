@@ -1,13 +1,16 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import {
   Activity,
   Bell,
+  ClipboardCheck,
   LayoutDashboard,
   LifeBuoy,
   LogOut,
   MapPin,
   Menu,
+  Settings,
   Smartphone,
   ShieldCheck,
 } from "lucide-react";
@@ -15,12 +18,15 @@ import { useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
+import { getDeviceInfo } from "@/lib/device";
+import { recordSecurityEvent } from "@/lib/security.functions";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { to: "/user/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/user/security", label: "Security", icon: ShieldCheck },
+  { to: "/user/security", label: "Settings", icon: Settings },
   { to: "/user/security/activity", label: "Activity", icon: Activity },
+  { to: "/user/attendance", label: "Attendance", icon: ClipboardCheck },
   { to: "/user/security/location", label: "Location", icon: MapPin },
   { to: "/user/devices", label: "Devices", icon: Smartphone },
   { to: "/user/notifications", label: "Alerts", icon: Bell },
@@ -30,12 +36,16 @@ const NAV = [
 export function AppShell({ children, unread = 0 }: { children: ReactNode; unread?: number }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const eventFn = useServerFn(recordSecurityEvent);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [open, setOpen] = useState(false);
 
   async function signOut() {
     await queryClient.cancelQueries();
     queryClient.clear();
+    await eventFn({
+      data: { eventType: "LOGOUT", device: getDeviceInfo(), note: "User signed out" },
+    }).catch((error) => console.warn("Logout activity could not be recorded:", error));
     await supabase.auth.signOut();
     navigate({ to: "/auth", replace: true });
   }

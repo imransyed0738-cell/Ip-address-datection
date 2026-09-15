@@ -209,7 +209,7 @@ export const adminOverview = createServerFn({ method: "GET" })
         db.from("security_events").select("id", { count: "exact", head: true }).gte("created_at", since),
         db
           .from("security_events")
-          .select("id, user_id, event_type, ip_address, browser, os, location_label, risk_score, risk_level, status, created_at")
+          .select("id, user_id, event_type, ip_address, device_type, browser, os, location_label, risk_score, risk_level, risk_reasons, status, created_at")
           .order("created_at", { ascending: false })
           .limit(40),
         db.from("profiles").select("id").eq("account_locked", true),
@@ -242,23 +242,26 @@ export const adminListUsers = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     await assertAdmin(context as any);
     const db = context.supabase;
-    const { data: mergedProfiles } = await db
+    const { data: mergedProfiles, error: profilesError } = await db
       .from("profiles")
       .select(
-        "id, full_name, email, account_locked, flagged_for_review, location_consent, last_location_label, last_location_at, created_at",
+        "id, full_name, email, account_locked, flagged_for_review, location_consent, city, country, last_lat, last_lng, last_location_label, last_location_at, created_at",
       )
       .order("created_at", { ascending: false })
       .limit(200);
+    if (profilesError) throw profilesError;
 
     const profiles = mergedProfiles ?? [];
     const ids = profiles.map((p: any) => p.id);
-    const { data: events } = await db
+    const { data: events, error: eventsError } = await db
       .from("security_events")
       .select("user_id, event_type, ip_address, risk_score, created_at")
       .in("user_id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"])
       .order("created_at", { ascending: false })
       .limit(1000);
-    const { data: devices } = await db.from("devices").select("user_id");
+    if (eventsError) throw eventsError;
+    const { data: devices, error: devicesError } = await db.from("devices").select("user_id");
+    if (devicesError) throw devicesError;
 
     return profiles.map((p: any) => {
       const own = (events ?? []).filter((e: any) => e.user_id === p.id);
@@ -297,6 +300,10 @@ export const adminUserDetail = createServerFn({ method: "POST" })
         .order("generated_at", { ascending: false })
         .limit(20),
     ]);
+
+      const queryError = [profile, events, devices, alerts, notes, assessments].find((result: any) => result.error)?.error;
+      if (queryError) throw new Error(`Could not load account investigation: ${queryError.message}`);
+      if (!profile.data) throw new Error("This user account no longer exists.");
 
     const risk = scoreFromEvents((events.data ?? []) as any, (devices.data ?? []).length);
     await writeAudit(db, adminId, "ADMIN_VIEWED_USER_SECURITY", `profiles/${uid}`);

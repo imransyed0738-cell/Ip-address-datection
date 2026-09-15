@@ -13,11 +13,15 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as HelpRouteImport } from './routes/help'
+import { Route as MobileConsentRouteImport } from './routes/mobile-consent'
 import { Route as AdminLoginRouteImport } from './routes/admin/login'
+import { Route as AuthenticatedAdminAttendanceRouteImport } from './routes/_authenticated/admin/attendance'
 import { Route as AuthenticatedAdminAuditRouteImport } from './routes/_authenticated/admin/audit'
 import { Route as AuthenticatedAdminDashboardRouteImport } from './routes/_authenticated/admin/dashboard'
 import { Route as AuthenticatedAdminEventsRouteImport } from './routes/_authenticated/admin/events'
+import { Route as AuthenticatedAdminLocationRouteImport } from './routes/_authenticated/admin/location'
 import { Route as AuthenticatedAdminUsersRouteImport } from './routes/_authenticated/admin/users'
+import { Route as AuthenticatedUserAttendanceRouteImport } from './routes/_authenticated/user/attendance'
 import { Route as AuthenticatedUserDashboardRouteImport } from './routes/_authenticated/user/dashboard'
 import { Route as AuthenticatedUserDevicesRouteImport } from './routes/_authenticated/user/devices'
 import { Route as AuthenticatedUserNotificationsRouteImport } from './routes/_authenticated/user/notifications'
@@ -45,11 +49,22 @@ const HelpRoute = HelpRouteImport.update({
   path: '/help',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MobileConsentRoute = MobileConsentRouteImport.update({
+  id: '/mobile-consent',
+  path: '/mobile-consent',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminLoginRoute = AdminLoginRouteImport.update({
   id: '/admin/login',
   path: '/admin/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedAdminAttendanceRoute =
+  AuthenticatedAdminAttendanceRouteImport.update({
+    id: '/admin/attendance',
+    path: '/admin/attendance',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedAdminAuditRoute = AuthenticatedAdminAuditRouteImport.update({
   id: '/admin/audit',
   path: '/admin/audit',
@@ -67,11 +82,23 @@ const AuthenticatedAdminEventsRoute =
     path: '/admin/events',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedAdminLocationRoute =
+  AuthenticatedAdminLocationRouteImport.update({
+    id: '/admin/location',
+    path: '/admin/location',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedAdminUsersRoute = AuthenticatedAdminUsersRouteImport.update({
   id: '/admin/users',
   path: '/admin/users',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedUserAttendanceRoute =
+  AuthenticatedUserAttendanceRouteImport.update({
+    id: '/user/attendance',
+    path: '/user/attendance',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedUserDashboardRoute =
   AuthenticatedUserDashboardRouteImport.update({
     id: '/user/dashboard',
@@ -119,11 +146,15 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/help': typeof HelpRoute
+  '/mobile-consent': typeof MobileConsentRoute
   '/admin/login': typeof AdminLoginRoute
+  '/admin/attendance': typeof AuthenticatedAdminAttendanceRoute
   '/admin/audit': typeof AuthenticatedAdminAuditRoute
   '/admin/dashboard': typeof AuthenticatedAdminDashboardRoute
   '/admin/events': typeof AuthenticatedAdminEventsRoute
+  '/admin/location': typeof AuthenticatedAdminLocationRoute
   '/admin/users': typeof AuthenticatedAdminUsersRouteWithChildren
+  '/user/attendance': typeof AuthenticatedUserAttendanceRoute
   '/user/dashboard': typeof AuthenticatedUserDashboardRoute
   '/user/devices': typeof AuthenticatedUserDevicesRoute
   '/user/notifications': typeof AuthenticatedUserNotificationsRoute
@@ -136,11 +167,15 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/help': typeof HelpRoute
+  '/mobile-consent': typeof MobileConsentRoute
   '/admin/login': typeof AdminLoginRoute
+  '/admin/attendance': typeof AuthenticatedAdminAttendanceRoute
   '/admin/audit': typeof AuthenticatedAdminAuditRoute
   '/admin/dashboard': typeof AuthenticatedAdminDashboardRoute
   '/admin/events': typeof AuthenticatedAdminEventsRoute
+  '/admin/location': typeof AuthenticatedAdminLocationRoute
   '/admin/users': typeof AuthenticatedAdminUsersRouteWithChildren
+  '/user/attendance': typeof AuthenticatedUserAttendanceRoute
   '/user/dashboard': typeof AuthenticatedUserDashboardRoute
   '/user/devices': typeof AuthenticatedUserDevicesRoute
   '/user/notifications': typeof AuthenticatedUserNotificationsRoute
@@ -155,11 +190,15 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
   '/help': typeof HelpRoute
+  '/mobile-consent': typeof MobileConsentRoute
   '/admin/login': typeof AdminLoginRoute
+  '/_authenticated/admin/attendance': typeof AuthenticatedAdminAttendanceRoute
   '/_authenticated/admin/audit': typeof AuthenticatedAdminAuditRoute
   '/_authenticated/admin/dashboard': typeof AuthenticatedAdminDashboardRoute
   '/_authenticated/admin/events': typeof AuthenticatedAdminEventsRoute
+  '/_authenticated/admin/location': typeof AuthenticatedAdminLocationRoute
   '/_authenticated/admin/users': typeof AuthenticatedAdminUsersRouteWithChildren
+  '/_authenticated/user/attendance': typeof AuthenticatedUserAttendanceRoute
   '/_authenticated/user/dashboard': typeof AuthenticatedUserDashboardRoute
   '/_authenticated/user/devices': typeof AuthenticatedUserDevicesRoute
   '/_authenticated/user/notifications': typeof AuthenticatedUserNotificationsRoute
@@ -174,11 +213,15 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/help'
+    | '/mobile-consent'
     | '/admin/login'
+    | '/admin/attendance'
     | '/admin/audit'
     | '/admin/dashboard'
     | '/admin/events'
+    | '/admin/location'
     | '/admin/users'
+    | '/user/attendance'
     | '/user/dashboard'
     | '/user/devices'
     | '/user/notifications'
@@ -191,11 +234,15 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/help'
+    | '/mobile-consent'
     | '/admin/login'
+    | '/admin/attendance'
     | '/admin/audit'
     | '/admin/dashboard'
     | '/admin/events'
+    | '/admin/location'
     | '/admin/users'
+    | '/user/attendance'
     | '/user/dashboard'
     | '/user/devices'
     | '/user/notifications'
@@ -209,11 +256,15 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/auth'
     | '/help'
+    | '/mobile-consent'
     | '/admin/login'
+    | '/_authenticated/admin/attendance'
     | '/_authenticated/admin/audit'
     | '/_authenticated/admin/dashboard'
     | '/_authenticated/admin/events'
+    | '/_authenticated/admin/location'
     | '/_authenticated/admin/users'
+    | '/_authenticated/user/attendance'
     | '/_authenticated/user/dashboard'
     | '/_authenticated/user/devices'
     | '/_authenticated/user/notifications'
@@ -228,6 +279,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   HelpRoute: typeof HelpRoute
+  MobileConsentRoute: typeof MobileConsentRoute
   AdminLoginRoute: typeof AdminLoginRoute
 }
 
@@ -261,12 +313,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HelpRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mobile-consent': {
+      id: '/mobile-consent'
+      path: '/mobile-consent'
+      fullPath: '/mobile-consent'
+      preLoaderRoute: typeof MobileConsentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/login': {
       id: '/admin/login'
       path: '/admin/login'
       fullPath: '/admin/login'
       preLoaderRoute: typeof AdminLoginRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/admin/attendance': {
+      id: '/_authenticated/admin/attendance'
+      path: '/admin/attendance'
+      fullPath: '/admin/attendance'
+      preLoaderRoute: typeof AuthenticatedAdminAttendanceRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/admin/audit': {
       id: '/_authenticated/admin/audit'
@@ -289,11 +355,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminEventsRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/admin/location': {
+      id: '/_authenticated/admin/location'
+      path: '/admin/location'
+      fullPath: '/admin/location'
+      preLoaderRoute: typeof AuthenticatedAdminLocationRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/admin/users': {
       id: '/_authenticated/admin/users'
       path: '/admin/users'
       fullPath: '/admin/users'
       preLoaderRoute: typeof AuthenticatedAdminUsersRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/user/attendance': {
+      id: '/_authenticated/user/attendance'
+      path: '/user/attendance'
+      fullPath: '/user/attendance'
+      preLoaderRoute: typeof AuthenticatedUserAttendanceRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/user/dashboard': {
@@ -363,10 +443,13 @@ const AuthenticatedAdminUsersRouteWithChildren =
   )
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedAdminAttendanceRoute: typeof AuthenticatedAdminAttendanceRoute
   AuthenticatedAdminAuditRoute: typeof AuthenticatedAdminAuditRoute
   AuthenticatedAdminDashboardRoute: typeof AuthenticatedAdminDashboardRoute
   AuthenticatedAdminEventsRoute: typeof AuthenticatedAdminEventsRoute
+  AuthenticatedAdminLocationRoute: typeof AuthenticatedAdminLocationRoute
   AuthenticatedAdminUsersRoute: typeof AuthenticatedAdminUsersRouteWithChildren
+  AuthenticatedUserAttendanceRoute: typeof AuthenticatedUserAttendanceRoute
   AuthenticatedUserDashboardRoute: typeof AuthenticatedUserDashboardRoute
   AuthenticatedUserDevicesRoute: typeof AuthenticatedUserDevicesRoute
   AuthenticatedUserNotificationsRoute: typeof AuthenticatedUserNotificationsRoute
@@ -376,10 +459,13 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedAdminAttendanceRoute: AuthenticatedAdminAttendanceRoute,
   AuthenticatedAdminAuditRoute: AuthenticatedAdminAuditRoute,
   AuthenticatedAdminDashboardRoute: AuthenticatedAdminDashboardRoute,
   AuthenticatedAdminEventsRoute: AuthenticatedAdminEventsRoute,
+  AuthenticatedAdminLocationRoute: AuthenticatedAdminLocationRoute,
   AuthenticatedAdminUsersRoute: AuthenticatedAdminUsersRouteWithChildren,
+  AuthenticatedUserAttendanceRoute: AuthenticatedUserAttendanceRoute,
   AuthenticatedUserDashboardRoute: AuthenticatedUserDashboardRoute,
   AuthenticatedUserDevicesRoute: AuthenticatedUserDevicesRoute,
   AuthenticatedUserNotificationsRoute: AuthenticatedUserNotificationsRoute,
@@ -398,6 +484,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   HelpRoute: HelpRoute,
+  MobileConsentRoute: MobileConsentRoute,
   AdminLoginRoute: AdminLoginRoute,
 }
 export const routeTree = rootRouteImport

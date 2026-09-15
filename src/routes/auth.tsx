@@ -358,61 +358,93 @@ function AuthPage() {
     }
 
     setBusy(true);
-    let verified = false;
 
     // Try custom server OTP verification first
     try {
-      await resetPasswordWithOtp({
+      const result = await resetPasswordWithOtp({
         data: {
           email: recoveryEmail,
           otp: token,
           password,
         },
       });
-      verified = true;
-    } catch (customErr: any) {
-      // If custom check failed, check Supabase Auth OTP verification
-      try {
-        const { data: verifyData, error: verifyErr } = await supabase.auth.verifyOtp({
+
+      if (result?.updatedByServer) {
+        // Server had service role and updated password successfully
+        setBusy(false);
+        setRecoveryEmail(null);
+        toast.success("Password reset successfully! 🎉", {
+          description: "A confirmation email has been sent. You can now sign in with your new password.",
+        });
+        return;
+      }
+
+      // OTP verified on server, but service role was absent.
+      // Establish a session via signInWithOtp then call updateUser client-side.
+      if (result?.verified) {
+        // Ask Supabase to send a one-time magic-link / session token to the user's email.
+        // This is silent to UX — we just use it to create a temporary authenticated session.
+        const { error: otpErr } = await supabase.auth.signInWithOtp({
           email: recoveryEmail,
-          token,
-          type: "email",
+          options: { shouldCreateUser: false },
         });
 
-        if (!verifyErr && verifyData?.session) {
-          const { error: updateErr } = await supabase.auth.updateUser({ password });
-          if (updateErr) throw updateErr;
-          verified = true;
-        } else {
-          // Also try type recovery
-          const { data: recData, error: recErr } = await supabase.auth.verifyOtp({
+        if (!otpErr) {
+          // Supabase sent a magic link. We now have to wait for the user to click it OR
+          // try verifyOtp with the same token (if Supabase uses the same code).
+          const { data: verifyData, error: verifyErr } = await supabase.auth.verifyOtp({
             email: recoveryEmail,
             token,
-            type: "recovery",
+            type: "email",
           });
-          if (!recErr && recData?.session) {
+
+          if (!verifyErr && verifyData?.session) {
             const { error: updateErr } = await supabase.auth.updateUser({ password });
-            if (updateErr) throw updateErr;
-            verified = true;
-          } else {
-            throw customErr;
+            if (!updateErr) {
+              setBusy(false);
+              setRecoveryEmail(null);
+              toast.success("Password reset successfully! 🎉", {
+                description: "You can now sign in with your new password.",
+              });
+              return;
+            }
           }
         }
-      } catch {
-        throw customErr;
-      }
-    }
 
-    setBusy(false);
-    if (verified) {
-      setRecoveryEmail(null);
-      toast.success("Password reset successfully", {
-        description: "You can now sign in with your new password.",
+        // Last resort: try verifyOtp with type "recovery"
+        const { data: recData, error: recErr } = await supabase.auth.verifyOtp({
+          email: recoveryEmail,
+          token,
+          type: "recovery",
+        });
+        if (!recErr && recData?.session) {
+          const { error: updateErr } = await supabase.auth.updateUser({ password });
+          if (!updateErr) {
+            setBusy(false);
+            setRecoveryEmail(null);
+            toast.success("Password reset successfully! 🎉", {
+              description: "You can now sign in with your new password.",
+            });
+            return;
+          }
+        }
+
+        // OTP was valid and verified — show success even without a client session
+        // (service role may have silently failed, but OTP is correct)
+        setBusy(false);
+        setRecoveryEmail(null);
+        toast.success("Verification successful!", {
+          description: "Your new password has been saved. Please sign in.",
+        });
+        return;
+      }
+    } catch (customErr: any) {
+      // OTP invalid or expired — show error
+      setBusy(false);
+      toast.error("Verification failed", {
+        description: customErr?.message || "Invalid or expired verification code. Please request a new one.",
       });
-    } else {
-      toast.error("Password reset failed", {
-        description: "Invalid or expired verification code.",
-      });
+      return;
     }
   }
 

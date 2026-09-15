@@ -1,7 +1,7 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, ClipboardList, LogOut, ShieldAlert, Users } from "lucide-react";
+import { AlertTriangle, ClipboardCheck, ClipboardList, LogOut, MapPin, ShieldAlert, Users } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,8 @@ import { cn } from "@/lib/utils";
 const NAV = [
   { to: "/admin/dashboard", label: "Overview", icon: ShieldAlert },
   { to: "/admin/users", label: "Users", icon: Users },
+  { to: "/admin/attendance", label: "Attendance", icon: ClipboardCheck },
+  { to: "/admin/location", label: "Locations", icon: MapPin },
   { to: "/admin/events", label: "Security events", icon: AlertTriangle },
   { to: "/admin/audit", label: "Audit log", icon: ClipboardList },
 ] as const;
@@ -59,7 +61,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-30 border-b border-border bg-navy text-navy-foreground">
+      <header className="sticky top-0 z-30 border-b border-border bg-navy text-navy-foreground print:hidden">
         <div className="flex h-14 items-center gap-3 px-4">
           <Link to="/admin/dashboard" className="flex items-center gap-2 font-semibold tracking-tight">
             <ShieldAlert className="size-5" />
@@ -78,7 +80,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
       </header>
 
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 md:flex-row">
-        <aside className="w-full shrink-0 md:w-56">
+        <aside className="w-full shrink-0 md:w-56 print:hidden">
           <nav className="flex flex-row gap-1 overflow-x-auto md:flex-col">
             {NAV.map(({ to, label, icon: Icon }) => (
               <Link

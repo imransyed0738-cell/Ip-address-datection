@@ -54,11 +54,15 @@ export function useSecurityEvents(limit = 50) {
     refetchOnWindowFocus: true,
     refetchInterval: 30_000,
     queryFn: async () => {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Your session is not available. Please sign in again.");
       const { data, error } = await supabase
         .from("security_events")
         .select(
           "id, event_type, ip_address, device_type, browser, os, location_label, risk_score, risk_level, risk_reasons, status, created_at",
         )
+        .eq("user_id", auth.user.id)
         .order("created_at", { ascending: false })
         .limit(limit);
       if (error) throw error;
@@ -74,9 +78,13 @@ export function useAlerts() {
     refetchOnWindowFocus: true,
     refetchInterval: 30_000,
     queryFn: async () => {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Your session is not available. Please sign in again.");
       const { data, error } = await supabase
         .from("security_alerts")
         .select("id, title, description, severity, category, read, created_at")
+        .eq("user_id", auth.user.id)
         .order("created_at", { ascending: false })
         .limit(100);
       if (error) throw error;
@@ -91,9 +99,13 @@ export function useDevices() {
     refetchOnWindowFocus: true,
     refetchInterval: 30_000,
     queryFn: async () => {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Your session is not available. Please sign in again.");
       const { data, error } = await supabase
         .from("devices")
         .select("*")
+        .eq("user_id", auth.user.id)
         .order("last_seen", { ascending: false });
       if (error) throw error;
       return data ?? [];

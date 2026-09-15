@@ -425,7 +425,8 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
       throw new Error("Invalid or expired 6-digit code.");
     }
 
-    // 3. Update password via Supabase Admin Auth if available
+    // 3. Update password via Supabase Admin Auth if service key is available
+    let updatedByServer = false;
     try {
       const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
       const { data: profile } = await supabaseAdmin
@@ -435,29 +436,66 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
         .maybeSingle();
 
       if (profile?.id) {
-        await supabaseAdmin.auth.admin.updateUserById(profile.id, {
+        const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(profile.id, {
           password: data.password,
         });
 
-        // Log the security event
-        await supabaseAdmin.from("security_events").insert({
-          user_id: profile.id,
-          event_type: "PASSWORD_CHANGED",
-          ip_address: clientIp(),
-          user_agent: clientUserAgent(),
-          risk_score: 10,
-          risk_level: "LOW",
-          risk_reasons: ["Password reset via email OTP"],
-          status: "Trusted",
-          metadata: { source: "forgot_password_otp" },
-        });
+        if (!updateError) {
+          updatedByServer = true;
+          // Log the security event
+          await supabaseAdmin.from("security_events").insert({
+            user_id: profile.id,
+            event_type: "PASSWORD_CHANGED",
+            ip_address: clientIp(),
+            user_agent: clientUserAgent(),
+            risk_score: 10,
+            risk_level: "LOW",
+            risk_reasons: ["Password reset via email OTP"],
+            status: "Trusted",
+            metadata: { source: "forgot_password_otp" },
+          });
+
+          // Send password change confirmation email
+          try {
+            const { data: profileData } = await supabaseAdmin
+              .from("profiles")
+              .select("email, full_name")
+              .eq("id", profile.id)
+              .maybeSingle();
+
+            if (profileData?.email) {
+              const { sendNotificationEmail } = await import("@/lib/mailer.server");
+              await sendNotificationEmail({
+                to: profileData.email,
+                subject: "Your Sentinel password has been changed",
+                text: `Hello ${profileData.full_name || ""},\n\nYour Sentinel Security account password was successfully changed.\n\nIf you did not make this change, contact us immediately.\n\nRegards,\nSentinel Security Team`,
+                html: `
+                  <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+                    <h2 style="color: #111827; margin-top: 0;">Password Changed Successfully ✅</h2>
+                    <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">Hello <strong>${profileData.full_name || ""}</strong>,</p>
+                    <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">Your Sentinel Security account password has been successfully changed.</p>
+                    <div style="margin: 20px 0; padding: 14px 18px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; color: #991b1b; font-size: 14px;">
+                      ⚠️ If you did not request this change, please contact our security team immediately.
+                    </div>
+                    <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
+                    <p style="color: #9ca3af; font-size: 12px; margin-bottom: 0;">Sentinel Security Notification System</p>
+                  </div>
+                `,
+              });
+            }
+          } catch {
+            // Non-critical — email confirmation is optional
+          }
+        }
       }
     } catch {
-      // If service role key is absent, log warning but do not crash
-      console.warn("[Auth] Password reset verified by OTP server.");
+      // If service role key is absent, the client will handle the password update
+      console.warn("[Auth] Service role unavailable — client must call updateUser after verifyOtp.");
     }
 
-    return { success: true };
+    // Return verified:true so the client knows OTP passed.
+    // If updatedByServer is false, auth.tsx will handle it client-side via supabase.auth.verifyOtp + updateUser.
+    return { success: true, verified: true, updatedByServer };
   });
 
 /** Returns device records only when the number belongs to the signed-in user's profile. */
@@ -857,57 +895,44 @@ export const notifyAttendanceChange = createServerFn({ method: "POST" })
       result: "success",
     });
 
-    const workerUrl =
-      process.env["EMAIL_WORKER_URL"] ||
-      process.env["VITE_EMAIL_WORKER_URL"] ||
-      "https://sentinel-registration-email.sadiq8412pasha.workers.dev";
-
     const action = data.action === "modified" ? "modified" : "deleted";
+    const actionLabel = action === "modified" ? "Modified ✏️" : "Deleted 🗑️";
+    const actionColor = action === "modified" ? "#d97706" : "#dc2626";
+    const actionBg   = action === "modified" ? "#fffbeb" : "#fef2f2";
+    const actionBorder = action === "modified" ? "#fde68a" : "#fecaca";
 
-    // 1. Send via Cloudflare Email Worker
+    const emailHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+        <h2 style="color: #111827; margin-top: 0; font-size: 20px;">Attendance Record ${actionLabel}</h2>
+        <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">An attendance record has been <strong>${action}</strong> in the Sentinel system.</p>
+        <div style="background: ${actionBg}; border: 1px solid ${actionBorder}; border-radius: 8px; padding: 16px; margin: 20px 0;">
+          <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+            <tr><td style="color:#6b7280; padding: 4px 0; width:40%;">Name</td><td style="color:#111827; font-weight:600;">${data.attendance.name}</td></tr>
+            <tr><td style="color:#6b7280; padding: 4px 0;">Roll Number</td><td style="color:#111827; font-weight:600;">${data.attendance.rollNumber}</td></tr>
+            <tr><td style="color:#6b7280; padding: 4px 0;">Date</td><td style="color:#111827; font-weight:600;">${data.attendance.date}</td></tr>
+            <tr><td style="color:#6b7280; padding: 4px 0;">Status</td><td style="color:${actionColor}; font-weight:600;">${data.attendance.status}</td></tr>
+            <tr><td style="color:#6b7280; padding: 4px 0;">Note</td><td style="color:#111827;">${data.attendance.note || "—"}</td></tr>
+            <tr><td style="color:#6b7280; padding: 4px 0;">IP Address</td><td style="color:#111827; font-family:monospace;">${ip}</td></tr>
+          </table>
+        </div>
+        <p style="color:#6b7280; font-size:12px;">This change has been recorded in the Sentinel audit log.</p>
+        <hr style="border:0; border-top:1px solid #e5e7eb; margin:20px 0;" />
+        <p style="color:#9ca3af; font-size:12px; margin-bottom:0;">Sentinel Security Notification System</p>
+      </div>
+    `;
+
+    // Send via Gmail SMTP (primary) → Resend fallback → Cloudflare Worker last resort
+    const { sendNotificationEmail } = await import("@/lib/mailer.server");
     try {
-      const workerRes = await fetch(workerUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          type: "attendance_change",
-          action,
-          attendance: data.attendance,
-          recipients,
-        }),
+      await sendNotificationEmail({
+        to: recipients,
+        subject: `[Sentinel] Attendance ${actionLabel} — ${data.attendance.name} (${data.attendance.date})`,
+        text: `Attendance record ${action}.\n\nName: ${data.attendance.name}\nRoll Number: ${data.attendance.rollNumber}\nDate: ${data.attendance.date}\nStatus: ${data.attendance.status}\nNote: ${data.attendance.note || "—"}\nIP Address: ${ip}\n\nThis change has been recorded in the audit log.`,
+        html: emailHtml,
       });
-
-      if (workerRes.ok) {
-        const workerResult = (await workerRes.json().catch(() => null)) as { delivered?: boolean } | null;
-        if (workerResult?.delivered) {
-          return { delivered: true, ip };
-        }
-      }
-    } catch (workerErr) {
-      console.warn("Cloudflare worker email call warning:", workerErr);
-    }
-
-    // 2. Fallback to direct Resend if API key is provided
-    const apiKey = process.env["RESEND_API_KEY"];
-    const from = process.env["SUPPORT_FROM_EMAIL"];
-    if (apiKey && from && recipients.length) {
-      const [primaryRecipient, ...blindCopyRecipients] = recipients;
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from,
-          to: [primaryRecipient],
-          ...(blindCopyRecipients.length ? { bcc: blindCopyRecipients } : {}),
-          subject: `Attendance record ${action}`,
-          text: `An attendance record was ${action}.\n\nName: ${data.attendance.name}\nRoll number: ${data.attendance.rollNumber}\nDate: ${data.attendance.date}\nStatus: ${data.attendance.status}\nActing IP address: ${ip}\n\nThis change has been recorded in the audit log.`,
-        }),
-      });
-      if (response.ok) {
-        return { delivered: true, ip };
-      }
+      return { delivered: true, ip };
+    } catch (mailErr) {
+      console.warn("[Attendance] Email notification failed:", mailErr);
     }
 
     return { delivered: false, ip };

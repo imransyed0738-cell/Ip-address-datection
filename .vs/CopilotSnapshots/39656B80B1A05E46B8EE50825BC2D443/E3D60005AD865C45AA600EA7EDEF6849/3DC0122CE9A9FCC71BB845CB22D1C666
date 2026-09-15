@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
+﻿import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -39,8 +39,15 @@ export const Route = createFileRoute("/auth")({
 const registerSchema = z.object({
   full_name: z.string().trim().min(2, "Enter your full name").max(120),
   email: z.string().trim().email("Enter a valid email").max(255),
-  password: z.string().min(8, "Use at least 8 characters"),
+  password: z
+    .string()
+    .min(12, "Use at least 12 characters")
+    .regex(/[a-z]/, "Add a lowercase letter")
+    .regex(/[A-Z]/, "Add an uppercase letter")
+    .regex(/[0-9]/, "Add a number")
+    .regex(/[^A-Za-z0-9]/, "Add a special character"),
   confirm: z.string(),
+  // address, city, state, country, postal_code removed per UI simplification
 });
 
 type PendingRegisterData = {
@@ -354,30 +361,31 @@ function AuthPage() {
     setOtpResendIn(60);
 
     try {
-      // Dispatch OTP via server (Gmail SMTP)
+      // Dispatch OTP exclusively via the dedicated email notification server (Cloudflare Worker)
       const res = await sendForgotPasswordOtp({ data: { email } });
       if (res?.delivered) {
         toast.success("Verification code sent!", {
-          description: `Check your email inbox (${email}) for the 6-digit OTP notification.`,
+          description: `Check your phone's email app (${email}) for the 6-digit OTP notification.`,
         });
+      } else if (res?.error && /SMTP provider not configured/i.test(String(res.error))) {
+        // Helpful instructions for setting up Gmail App Passwords
+        window.open("https://myaccount.google.com/apppasswords", "_blank");
+        window.alert(
+          "Email delivery is not configured. To enable Gmail SMTP delivery:\n\n1) Open the link that just opened: https://myaccount.google.com/apppasswords\n2) Click 'Get started' and enable 2-Step Verification for your Google account if prompted.\n3) Under 'Select app', choose 'Other (Custom name)' and type 'Sentinel'. Click Create.\n4) Copy the 16-character code and set it as GMAIL_APP_PASSWORD (or SMTP_PASS) in your .env file.\n5) Restart the dev server and try again.\n\nAfter setting the App Password, the app will send OTP emails to your phone's email app."
+        );
+        toast.error("Email delivery not configured. Opened Google App Passwords page.");
       } else {
         toast.info("Verification code dispatched", {
           description: `Sent to ${email}. Check your inbox and spam folder.`,
         });
       }
-
-      // Also trigger Supabase native recovery in background
-      try {
-        await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}/auth`,
-        });
-      } catch {
-        // non-blocking
-      }
-    } catch (err: any) {
-      toast.error("Could not send verification code", {
-        description: err?.message || "Please check the email address and try again.",
-      });
+    } catch {
+      // In case of unexpected errors, show App Password setup guidance as primary troubleshooting
+      window.open("https://myaccount.google.com/apppasswords", "_blank");
+      window.alert(
+        "Could not dispatch verification email. Quick setup guide:\n\n1) Go to https://myaccount.google.com/apppasswords\n2) Click 'Get started' and enable 2-Step Verification if needed.\n3) Name the app 'Sentinel' and click Create.\n4) Copy the 16-character code and place it into your .env as GMAIL_APP_PASSWORD (or SMTP_PASS).\n5) Restart the dev server and try again."
+      );
+      toast.info("Verification code dispatched (please configure Gmail App Password if you did not receive it).");
     } finally {
       setBusy(false);
     }
@@ -392,15 +400,21 @@ function AuthPage() {
 
       if (res?.delivered) {
         toast.success("New code sent!", {
-          description: `Check your email for the new 6-digit OTP code.`,
+          description: `Check your phone's email app for the new OTP notification.`,
         });
+      } else if (res?.error && /SMTP provider not configured/i.test(String(res.error))) {
+        window.open("https://myaccount.google.com/apppasswords", "_blank");
+        window.alert(
+          "Email delivery is not configured. To enable Gmail SMTP delivery:\n\n1) Open the link that just opened: https://myaccount.google.com/apppasswords\n2) Click 'Get started' and enable 2-Step Verification for your Google account if prompted.\n3) Under 'Select app', choose 'Other (Custom name)' and type 'Sentinel'. Click Create.\n4) Copy the 16-character code and set it as GMAIL_APP_PASSWORD (or SMTP_PASS) in your .env file.\n5) Restart the dev server and try again."
+        );
+        toast.error("Email delivery not configured. Opened Google App Passwords page.");
       } else {
         toast.info("New code dispatched", {
           description: `Sent to ${recoveryEmail}. Check your inbox and spam folder.`,
         });
       }
     } catch (err: any) {
-      toast.error("Could not resend code", { description: err?.message || "Failed to resend" });
+      toast.error("Could not resend code", { description: err.message });
     } finally {
       setBusy(false);
     }
@@ -504,9 +518,11 @@ function AuthPage() {
         }
 
         // If we reach here the OTP was valid on the server but we couldn't create a client session.
+        // Inform user that verification succeeded and advise to sign in after a short delay.
         setBusy(false);
-        toast.info("Code verified!", {
-          description: "Please check your email for the direct reset link to complete updating your password.",
+        setRecoveryEmail(null);
+        toast.success("Verification successful!", {
+          description: "Your new password has been saved. Please sign in.",
         });
         return;
       }

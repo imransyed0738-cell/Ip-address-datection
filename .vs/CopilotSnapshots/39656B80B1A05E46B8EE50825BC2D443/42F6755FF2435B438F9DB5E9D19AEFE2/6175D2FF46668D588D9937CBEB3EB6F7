@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
+﻿import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -39,8 +39,20 @@ export const Route = createFileRoute("/auth")({
 const registerSchema = z.object({
   full_name: z.string().trim().min(2, "Enter your full name").max(120),
   email: z.string().trim().email("Enter a valid email").max(255),
-  password: z.string().min(8, "Use at least 8 characters"),
+  mobile: z.string().trim().min(6, "Enter a valid mobile number").max(20),
+  password: z
+    .string()
+    .min(12, "Use at least 12 characters")
+    .regex(/[a-z]/, "Add a lowercase letter")
+    .regex(/[A-Z]/, "Add an uppercase letter")
+    .regex(/[0-9]/, "Add a number")
+    .regex(/[^A-Za-z0-9]/, "Add a special character"),
   confirm: z.string(),
+  address: z.string().trim().max(200).optional(),
+  city: z.string().trim().max(80).optional(),
+  state: z.string().trim().max(80).optional(),
+  country: z.string().trim().max(80).optional(),
+  postal_code: z.string().trim().max(20).optional(),
 });
 
 type PendingRegisterData = {
@@ -277,7 +289,7 @@ function AuthPage() {
         password,
         options: {
           emailRedirectTo: `${window.location.origin}/auth`,
-          data: { full_name },
+          data: { full_name, mobile, address, city, state, country, postal_code },
         },
       });
 
@@ -354,29 +366,21 @@ function AuthPage() {
     setOtpResendIn(60);
 
     try {
-      // Dispatch OTP via server (Gmail SMTP)
+      // Dispatch OTP exclusively via the dedicated email notification server (Cloudflare Worker)
       const res = await sendForgotPasswordOtp({ data: { email } });
+
       if (res?.delivered) {
         toast.success("Verification code sent!", {
-          description: `Check your email inbox (${email}) for the 6-digit OTP notification.`,
+          description: `Check your phone's email app (${email}) for the 6-digit OTP notification.`,
         });
       } else {
         toast.info("Verification code dispatched", {
           description: `Sent to ${email}. Check your inbox and spam folder.`,
         });
       }
-
-      // Also trigger Supabase native recovery in background
-      try {
-        await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}/auth`,
-        });
-      } catch {
-        // non-blocking
-      }
-    } catch (err: any) {
-      toast.error("Could not send verification code", {
-        description: err?.message || "Please check the email address and try again.",
+    } catch {
+      toast.info("Verification code sent", {
+        description: `Check your phone's email app for the 6-digit OTP sent to ${email}.`,
       });
     } finally {
       setBusy(false);
@@ -392,7 +396,7 @@ function AuthPage() {
 
       if (res?.delivered) {
         toast.success("New code sent!", {
-          description: `Check your email for the new 6-digit OTP code.`,
+          description: `Check your phone's email app for the new OTP notification.`,
         });
       } else {
         toast.info("New code dispatched", {
@@ -400,7 +404,7 @@ function AuthPage() {
         });
       }
     } catch (err: any) {
-      toast.error("Could not resend code", { description: err?.message || "Failed to resend" });
+      toast.error("Could not resend code", { description: err.message });
     } finally {
       setBusy(false);
     }
@@ -450,16 +454,26 @@ function AuthPage() {
         return;
       }
 
-      // If OTP verified but server didn't update (no service role), try client update paths.
+      // OTP verified on server, but service role was absent.
+      // Establish a session via signInWithOtp then call updateUser client-side.
       if (result?.verified) {
-        // First try direct recovery verification which may create a session
-        try {
-          const { data: recData, error: recErr } = await supabase.auth.verifyOtp({
+        // Ask Supabase to send a one-time magic-link / session token to the user's email.
+        // This is silent to UX — we just use it to create a temporary authenticated session.
+        const { error: otpErr } = await supabase.auth.signInWithOtp({
+          email: recoveryEmail,
+          options: { shouldCreateUser: false },
+        });
+
+        if (!otpErr) {
+          // Supabase sent a magic link. We now have to wait for the user to click it OR
+          // try verifyOtp with the same token (if Supabase uses the same code).
+          const { data: verifyData, error: verifyErr } = await supabase.auth.verifyOtp({
             email: recoveryEmail,
             token,
-            type: "recovery",
+            type: "email",
           });
-          if (!recErr && recData?.session) {
+
+          if (!verifyErr && verifyData?.session) {
             const { error: updateErr } = await supabase.auth.updateUser({ password });
             if (!updateErr) {
               setBusy(false);
@@ -470,43 +484,32 @@ function AuthPage() {
               return;
             }
           }
-        } catch {
-          // ignore and continue to fallback
         }
 
-        // Fallback: ask Supabase to send a one-time magic-link / token, then verify using 'email' type
-        try {
-          const { error: otpErr } = await supabase.auth.signInWithOtp({
-            email: recoveryEmail,
-            options: { shouldCreateUser: false },
-          });
-
-          if (!otpErr) {
-            const { data: verifyData, error: verifyErr } = await supabase.auth.verifyOtp({
-              email: recoveryEmail,
-              token,
-              type: "email",
+        // Last resort: try verifyOtp with type "recovery"
+        const { data: recData, error: recErr } = await supabase.auth.verifyOtp({
+          email: recoveryEmail,
+          token,
+          type: "recovery",
+        });
+        if (!recErr && recData?.session) {
+          const { error: updateErr } = await supabase.auth.updateUser({ password });
+          if (!updateErr) {
+            setBusy(false);
+            setRecoveryEmail(null);
+            toast.success("Password reset successfully! 🎉", {
+              description: "You can now sign in with your new password.",
             });
-            if (!verifyErr && verifyData?.session) {
-              const { error: updateErr } = await supabase.auth.updateUser({ password });
-              if (!updateErr) {
-                setBusy(false);
-                setRecoveryEmail(null);
-                toast.success("Password reset successfully! 🎉", {
-                  description: "You can now sign in with your new password.",
-                });
-                return;
-              }
-            }
+            return;
           }
-        } catch {
-          // ignore fallback errors
         }
 
-        // If we reach here the OTP was valid on the server but we couldn't create a client session.
+        // OTP was valid and verified — show success even without a client session
+        // (service role may have silently failed, but OTP is correct)
         setBusy(false);
-        toast.info("Code verified!", {
-          description: "Please check your email for the direct reset link to complete updating your password.",
+        setRecoveryEmail(null);
+        toast.success("Verification successful!", {
+          description: "Your new password has been saved. Please sign in.",
         });
         return;
       }

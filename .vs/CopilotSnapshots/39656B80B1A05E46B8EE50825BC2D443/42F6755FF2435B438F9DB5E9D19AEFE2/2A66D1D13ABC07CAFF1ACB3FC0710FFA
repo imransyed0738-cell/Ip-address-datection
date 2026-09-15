@@ -1,4 +1,4 @@
-# Public support contact shown in the Help Center
+﻿# Public support contact shown in the Help Center
 VITE_SUPPORT_PHONE=+91 99725 98412
 VITE_SUPPORT_EMAIL=imransyed0738@gmail.com
 
@@ -16,17 +16,6 @@ VITE_SUPABASE_PUBLISHABLE_KEY=
 # Public URL of the independently deployed Cloudflare registration-email Worker.
 VITE_EMAIL_WORKER_URL=
 
-# SMTP / Gmail settings (server-only). For Gmail use a 16-character App Password
-# created at https://myaccount.google.com/security -> App passwords
-# Example (do NOT commit real secrets):
-# GMAIL_USER=your-email@gmail.com
-# GMAIL_APP_PASSWORD=abcd efgh ijkl mnop
-# Or use generic SMTP credentials:
-SMTP_USER=
-SMTP_PASS=
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=465
-
-# Email addresses used by the app
-EMAIL_FROM="Sentinel Security <notifications@yourdomain.com>"
-ADMIN_EMAIL=
+# Server-only values for automatic support email delivery through Resend
+RESEND_API_KEY=
+SUPPORT_FROM_EMAIL=

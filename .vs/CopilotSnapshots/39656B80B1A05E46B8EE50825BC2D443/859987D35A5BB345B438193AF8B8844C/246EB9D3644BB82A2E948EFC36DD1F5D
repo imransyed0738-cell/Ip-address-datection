@@ -1,4 +1,4 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+﻿import { Link, createFileRoute } from "@tanstack/react-router";
 import { useMutation } from "@tanstack/react-query";
 import { LifeBuoy, Mail, Phone, ShieldAlert } from "lucide-react";
 import { useState } from "react";
@@ -34,7 +34,6 @@ function Help() {
   const [userEmail, setUserEmail] = useState("");
   const [emailComment, setEmailComment] = useState("");
   const [emailResult, setEmailResult] = useState<"sent" | "draft" | null>(null);
-  const [emailSubmitted, setEmailSubmitted] = useState(false);
   const sendMessage = useMutation({
     mutationFn: (data: { message: string; userEmail: string }) =>
       sendSupportMessage({ data }),

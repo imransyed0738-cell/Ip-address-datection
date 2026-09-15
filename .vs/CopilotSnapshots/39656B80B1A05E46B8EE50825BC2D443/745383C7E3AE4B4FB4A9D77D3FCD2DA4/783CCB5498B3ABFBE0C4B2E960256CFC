@@ -1,0 +1,145 @@
+﻿import nodemailer from "nodemailer";
+
+export interface SendEmailOptions {
+  to: string | string[];
+  subject: string;
+  text: string;
+  html?: string;
+  type?: "security_alert" | "cyber_threat_alert" | "forgot_password_otp" | "registration_welcome" | "general";
+  title?: string;
+  ip?: string;
+  riskLevel?: string;
+  location?: string;
+  device?: string;
+}
+
+export interface SendEmailResult {
+  success: boolean;
+  provider?: string;
+  error?: string;
+  recipients?: string[];
+}
+
+/**
+ * Sends email using the first available configured provider:
+ * 1. Direct SMTP / Gmail (via SMTP_USER + SMTP_PASS)
+ * 2. Resend API (via RESEND_API_KEY)
+ * 3. Brevo API (via BREVO_API_KEY)
+ * 4. Cloudflare Worker (via EMAIL_WORKER_URL)
+ */
+export async function sendNotificationEmail(options: SendEmailOptions): Promise<SendEmailResult> {
+  const { to, subject, text, html, type, title, ip, riskLevel, location, device } = options;
+  const rawList = Array.isArray(to) ? to : [to];
+  const recipients = Array.from(
+    new Set(
+      rawList
+        .filter((e): e is string => typeof e === "string" && Boolean(e.trim()))
+        .map((e) => e.trim().toLowerCase()),
+    ),
+  );
+
+  if (!recipients.length) {
+    return { success: false, error: "No recipient email address specified." };
+  }
+
+  // 1. Direct SMTP (e.g., Gmail with App Password, or custom SMTP)
+  const smtpUser = process.env["SMTP_USER"] || process.env["GMAIL_USER"] || process.env["ADMIN_EMAIL"];
+  const smtpPass = process.env["SMTP_PASS"] || process.env["GMAIL_APP_PASSWORD"];
+  const smtpHost = process.env["SMTP_HOST"] || "smtp.gmail.com";
+  const smtpPort = Number(process.env["SMTP_PORT"] || 465);
+
+  if (smtpUser && smtpPass) {
+    try {
+      const isGmail = smtpHost.includes("gmail") || smtpUser.includes("@gmail.com");
+      const transporter = nodemailer.createTransport(
+        isGmail
+          ? {
+              service: "gmail",
+              auth: {
+                user: smtpUser,
+                pass: smtpPass.replace(/\s+/g, ""), // clean spaces from 16-char app passwords
+              },
+            }
+          : {
+              host: smtpHost,
+              port: smtpPort,
+              secure: smtpPort === 465,
+              auth: {
+                user: smtpUser,
+                pass: smtpPass,
+              },
+            }
+      );
+
+      await transporter.sendMail({
+        from: `"Sentinel Security" <${smtpUser}>`,
+        to: recipients.join(", "),
+        subject,
+        text,
+        html: html || text,
+      });
+
+      return { success: true, provider: "smtp", recipients };
+    } catch (err: any) {
+      console.warn("[Mailer] SMTP delivery failed:", err?.message || err);
+      // Fall through to next provider
+    }
+  }
+
+  // NOTE: For educational/demo environments we use Gmail SMTP only.
+  // Removed other provider fallbacks (Resend, Brevo, Cloudflare worker) to ensure
+  // emails are dispatched only via the configured Gmail/SMTP account.
+  // If SMTP credentials are not configured, return an explicit error so the
+  // developer can supply GMAIL_USER and GMAIL_APP_PASSWORD (or SMTP_USER/SMTP_PASS).
+
+  // If SMTP was attempted above and succeeded, the function already returned.
+  // Otherwise, report failure now.
+  return { success: false, error: "SMTP provider not configured. Set SMTP_USER and SMTP_PASS (or GMAIL_USER and GMAIL_APP_PASSWORD) in environment." };
+        : subject.toLowerCase().includes("alert") || subject.toLowerCase().includes("security")
+          ? "security_alert"
+          : "registration_welcome");
+
+    const workerRes = await fetch(workerUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: emailType,
+        recipients,
+        email: recipients[0],
+        otp: isOtp ? otpMatch : undefined,
+        subject,
+        title,
+        text,
+        html,
+        ip,
+        ipAddress: ip,
+        riskLevel,
+        location,
+        device,
+      }),
+    });
+
+    const workerData = (await workerRes.json().catch(() => ({}))) as {
+      delivered?: boolean;
+      error?: string;
+    };
+
+    if (workerData.delivered) {
+      return { success: true, provider: "cloudflare_worker", recipients };
+    }
+    return {
+      success: false,
+      error:
+        workerData.error ||
+        "Email delivery pending. Please add an SMTP App Password (or RESEND_API_KEY / BREVO_API_KEY) in .env.",
+      recipients,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || "Email notification server unreachable.",
+      recipients,
+    };
+  }
+}
+

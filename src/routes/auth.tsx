@@ -13,6 +13,8 @@ import { getDeviceInfo } from "@/lib/device";
 import {
   recordSecurityEvent,
   sendForgotPasswordOtp,
+  sendRegistrationOtp,
+  verifyRegistrationOtp,
   resetPasswordWithOtp,
   sendWelcomeRegistrationEmail,
 } from "@/lib/security.functions";
@@ -53,6 +55,18 @@ const registerSchema = z.object({
   postal_code: z.string().trim().max(20).optional(),
 });
 
+type PendingRegisterData = {
+  full_name: string;
+  email: string;
+  mobile: string;
+  password: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  postal_code?: string;
+};
+
 async function afterSignIn() {
   const device = getDeviceInfo();
   try {
@@ -66,24 +80,6 @@ async function afterSignIn() {
     }
   } catch {
     // event logging must never block sign-in
-  }
-}
-
-async function sendRegistrationEmail(accessToken: string): Promise<{ delivered: boolean; reason?: string }> {
-  const workerUrl = import.meta.env["VITE_EMAIL_WORKER_URL"];
-  if (!workerUrl) return { delivered: false, reason: "The email service has not been configured." };
-
-  try {
-    const response = await fetch(workerUrl, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const result = (await response.json().catch(() => null)) as { delivered?: boolean } | null;
-    return result?.delivered
-      ? { delivered: true }
-      : { delivered: false, reason: "The email service could not deliver the message." };
-  } catch {
-    return { delivered: false, reason: "The email service could not be reached." };
   }
 }
 
@@ -101,6 +97,11 @@ function AuthPage() {
   const [otpResendIn, setOtpResendIn] = useState(0);
   const [loginError, setLoginError] = useState<string | null>(null);
 
+  // Registration OTP flow
+  const [pendingRegisterData, setPendingRegisterData] = useState<PendingRegisterData | null>(null);
+  const [registerOtpInput, setRegisterOtpInput] = useState("");
+  const [registerOtpResendIn, setRegisterOtpResendIn] = useState(0);
+
   useEffect(() => {
     if (resendIn <= 0) return;
     const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
@@ -112,6 +113,12 @@ function AuthPage() {
     const t = setTimeout(() => setOtpResendIn((s) => s - 1), 1000);
     return () => clearTimeout(t);
   }, [otpResendIn]);
+
+  useEffect(() => {
+    if (registerOtpResendIn <= 0) return;
+    const t = setTimeout(() => setRegisterOtpResendIn((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [registerOtpResendIn]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -199,73 +206,159 @@ function AuthPage() {
       toast.error("Passwords do not match");
       return;
     }
-    setBusy(true);
+
     const { full_name, email, password, mobile, address, city, state, country, postal_code } =
       parsed.data;
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth`,
-        data: { full_name, mobile, address, city, state, country, postal_code },
-      },
-    });
-    setBusy(false);
-    if (error) {
-      const weakPassword = error.code === "weak_password" || /weak password|known to be weak|pwned/i.test(error.message);
-      const rateLimited = /rate limit|after \d+ seconds/i.test(error.message);
+    setBusy(true);
 
-      if (weakPassword) {
-        toast.error("Password too weak", {
-          description: "Use 12+ characters with upper and lowercase letters, a number, and a special character.",
+    try {
+      // Step 1: Dispatch registration OTP via Gmail SMTP
+      const otpRes = await sendRegistrationOtp({
+        data: {
+          email,
+          fullName: full_name,
+        },
+      });
+
+      setPendingRegisterData({
+        full_name,
+        email,
+        mobile,
+        password,
+        address,
+        city,
+        state,
+        country,
+        postal_code,
+      });
+      setRegisterOtpInput("");
+      setRegisterOtpResendIn(60);
+
+      if (otpRes?.delivered) {
+        toast.success("Verification code sent!", {
+          description: `We sent a 6-digit OTP to ${email}. Enter it below to activate your account.`,
         });
+      } else {
+        toast.info("Verification code dispatched", {
+          description: `Sent to ${email}. Check your inbox and spam folder.`,
+        });
+      }
+    } catch (err: any) {
+      toast.error("Could not send verification code", {
+        description: err?.message || "Please check your email address and try again.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendRegisterOtp() {
+    if (!pendingRegisterData || registerOtpResendIn > 0) return;
+    setBusy(true);
+    setRegisterOtpResendIn(60);
+    try {
+      const res = await sendRegistrationOtp({
+        data: {
+          email: pendingRegisterData.email,
+          fullName: pendingRegisterData.full_name,
+        },
+      });
+      if (res?.delivered) {
+        toast.success("New verification code sent!", {
+          description: `A fresh 6-digit OTP was sent to ${pendingRegisterData.email}.`,
+        });
+      } else {
+        toast.info("New code dispatched", {
+          description: `Sent to ${pendingRegisterData.email}. Check inbox or spam.`,
+        });
+      }
+    } catch (err: any) {
+      toast.error("Could not resend code", { description: err?.message || "Error resending OTP" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleVerifyRegisterOtp(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!pendingRegisterData) return;
+    const token = registerOtpInput.replace(/\D/g, "");
+    if (token.length !== 6) {
+      toast.error("Please enter the complete 6-digit OTP code.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      // Step 2: Verify the 6-digit OTP
+      await verifyRegistrationOtp({
+        data: {
+          email: pendingRegisterData.email,
+          otp: token,
+        },
+      });
+
+      // Step 3: Create the user account in Supabase
+      const { full_name, email, password, mobile, address, city, state, country, postal_code } =
+        pendingRegisterData;
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth`,
+          data: { full_name, mobile, address, city, state, country, postal_code },
+        },
+      });
+
+      if (error) {
+        const weakPassword =
+          error.code === "weak_password" || /weak password|known to be weak|pwned/i.test(error.message);
+        if (weakPassword) {
+          toast.error("Password too weak", {
+            description: "Use 12+ characters with uppercase, lowercase, numbers, and special characters.",
+          });
+          return;
+        }
+        toast.error("Registration failed", { description: error.message });
         return;
       }
 
-      toast.error(rateLimited ? "Please wait a moment" : "Registration failed", {
-        description: rateLimited
-          ? "A confirmation email was already sent. Check your inbox before requesting another."
-          : error.message,
+      // Step 4: Dispatch the official welcome email notification
+      try {
+        await sendWelcomeRegistrationEmail({ data: { email, fullName: full_name } });
+      } catch {
+        // non-blocking
+      }
+
+      let session = data.session;
+      if (!session) {
+        const signInRes = await supabase.auth.signInWithPassword({ email, password });
+        if (signInRes.data?.session) {
+          session = signInRes.data.session;
+        }
+      }
+
+      toast.success("Account created successfully! 🎉", {
+        description: `Welcome to Sentinel Security, ${full_name}!`,
       });
-      if (rateLimited) {
-        setPendingEmail(email);
-        setResendIn(60);
-      }
-      return;
-    }
 
-    let session = data.session;
-    if (!session) {
-      // Try immediate sign-in in case email auto-confirm is enabled
-      const signInRes = await supabase.auth.signInWithPassword({ email, password });
-      if (signInRes.data?.session) {
-        session = signInRes.data.session;
-      }
-    }
+      setPendingRegisterData(null);
 
-    // Always dispatch welcome email notification for every registering user
-    try {
-      const delivery = await sendWelcomeRegistrationEmail({ data: { email, fullName: full_name } });
-      if (delivery.delivered) {
-        toast.success("Welcome email sent!", { description: `A welcome notification was sent to ${email}.` });
-      } else {
-        toast.info("Registration successful!", {
-          description: `Welcome notification sent to ${email}. Check your inbox and spam folder.`,
-        });
+      if (session) {
+        await continueAfterPassword();
+        return;
       }
-    } catch {
-      toast.info("Registration successful!", {
-        description: `Welcome notification dispatched to ${email}.`,
+
+      setPendingEmail(email);
+      setResendIn(60);
+    } catch (err: any) {
+      toast.error("Verification failed", {
+        description: err?.message || "Invalid or expired verification code.",
       });
+    } finally {
+      setBusy(false);
     }
-
-    if (session) {
-      await continueAfterPassword();
-      return;
-    }
-
-    setPendingEmail(email);
-    setResendIn(60);
   }
 
   async function resendConfirmation() {
@@ -483,6 +576,66 @@ function AuthPage() {
             }}
           >
             Back to sign in
+          </Button>
+        </form>
+      </Screen>
+    );
+  }
+
+  if (pendingRegisterData) {
+    return (
+      <Screen>
+        <form onSubmit={handleVerifyRegisterOtp} className="space-y-4">
+          <div className="text-center">
+            <h1 className="text-xl font-semibold">Verify Your Email Address</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              We sent a 6-digit verification code to{" "}
+              <span className="font-semibold text-foreground">{pendingRegisterData.email}</span>
+            </p>
+            <button
+              type="button"
+              onClick={() => setPendingRegisterData(null)}
+              className="mt-1 text-xs text-primary hover:underline"
+            >
+              Wrong email or details? Edit registration
+            </button>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="register-otp">6-Digit Verification Code</Label>
+              <button
+                type="button"
+                disabled={busy || registerOtpResendIn > 0}
+                onClick={resendRegisterOtp}
+                className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+              >
+                {registerOtpResendIn > 0 ? `Resend in ${registerOtpResendIn}s` : "Resend code"}
+              </button>
+            </div>
+            <Input
+              id="register-otp"
+              name="registerOtp"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={registerOtpInput}
+              onChange={(e) => setRegisterOtpInput(e.target.value.replace(/\D/g, ""))}
+              placeholder="123456"
+              className="text-center font-mono text-xl tracking-[0.4em] font-semibold"
+              required
+              autoFocus
+            />
+          </div>
+          <Button type="submit" className="w-full" disabled={busy || registerOtpInput.length !== 6}>
+            {busy ? "Verifying & Creating Account…" : "Verify & Create Account"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full"
+            onClick={() => setPendingRegisterData(null)}
+          >
+            Back to registration
           </Button>
         </form>
       </Screen>

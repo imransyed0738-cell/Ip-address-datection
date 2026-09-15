@@ -133,6 +133,16 @@ const welcomeEmailInput = z.object({
   fullName: z.string().trim().optional(),
 });
 
+const registrationOtpInput = z.object({
+  email: z.string().trim().email("Enter a valid email address"),
+  fullName: z.string().trim().optional(),
+});
+
+const verifyRegistrationOtpInput = z.object({
+  email: z.string().trim().email("Enter a valid email address"),
+  otp: z.string().trim().regex(/^\d{6}$/, "Enter a valid 6-digit code"),
+});
+
 function normalizeMobile(value: string): string {
   return value.replace(/\D/g, "");
 }
@@ -360,6 +370,93 @@ export const sendWelcomeRegistrationEmail = createServerFn({ method: "POST" })
       provider: mailResult.provider,
       error: mailResult.error,
     };
+  });
+
+// In-memory cache for new registration email OTP verification
+interface StoredRegistrationOtp {
+  tokenHash: string;
+  expiresAt: number;
+  attempts: number;
+}
+const registrationOtpCache = new Map<string, StoredRegistrationOtp>();
+
+/** Generates and sends a 6-digit verification code to verify user email before creating their account */
+export const sendRegistrationOtp = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => registrationOtpInput.parse(d))
+  .handler(async ({ data }) => {
+    const normalizedEmail = data.email.trim().toLowerCase();
+    const name = data.fullName?.trim() || "User";
+
+    // Generate secure random 6-digit OTP
+    const array = new Uint32Array(1);
+    crypto.getRandomValues(array);
+    const otp = String(100000 + ((array[0] || 0) % 900000));
+
+    const tokenHash = await hashVerificationToken(`register:${normalizedEmail}:${otp}`);
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+
+    registrationOtpCache.set(normalizedEmail, {
+      tokenHash,
+      expiresAt,
+      attempts: 0,
+    });
+
+    const { sendNotificationEmail } = await import("@/lib/mailer.server");
+    const mailResult = await sendNotificationEmail({
+      to: normalizedEmail,
+      subject: `Your Registration Verification Code: ${otp} - Sentinel Security`,
+      text: `Hello ${name},\n\nThank you for opening a Sentinel Security account.\n\nYour 6-digit registration verification code is:\n\n${otp}\n\nThis code will expire in 5 minutes. Enter this code to verify your email and activate your account.\n\nBest regards,\nSentinel Security Team`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+          <h2 style="color: #111827; margin-top: 0; font-size: 20px;">Complete Your Registration</h2>
+          <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">Hello <strong>${name}</strong>,</p>
+          <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">Thank you for registering with Sentinel Security. Please enter the 6-digit verification code below to confirm your email and create your account:</p>
+          <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 20px; text-align: center; margin: 24px 0;">
+            <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: #166534; margin-bottom: 6px;">Registration Verification Code</div>
+            <div style="font-family: monospace; font-size: 34px; font-weight: 700; letter-spacing: 0.3em; color: #15803d;">${otp}</div>
+          </div>
+          <p style="color: #6b7280; font-size: 13px; line-height: 1.5;">This code will expire in <strong>5 minutes</strong>. Do NOT share this code with anyone.</p>
+          <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
+          <p style="color: #9ca3af; font-size: 12px; margin-bottom: 0;">Sentinel Security Notification System</p>
+        </div>
+      `,
+    });
+
+    return {
+      sent: true,
+      delivered: mailResult.success,
+      provider: mailResult.provider,
+      error: mailResult.error,
+    };
+  });
+
+/** Verifies the 6-digit OTP entered by the user before creating their account */
+export const verifyRegistrationOtp = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => verifyRegistrationOtpInput.parse(d))
+  .handler(async ({ data }) => {
+    const normalizedEmail = data.email.trim().toLowerCase();
+    const tokenHash = await hashVerificationToken(`register:${normalizedEmail}:${data.otp.trim()}`);
+
+    const cached = registrationOtpCache.get(normalizedEmail);
+    if (!cached) {
+      throw new Error("No verification code found. Please request a new code.");
+    }
+    if (cached.expiresAt <= Date.now()) {
+      registrationOtpCache.delete(normalizedEmail);
+      throw new Error("This verification code has expired. Please request a new code.");
+    }
+    if (cached.attempts >= 5) {
+      registrationOtpCache.delete(normalizedEmail);
+      throw new Error("Too many failed attempts. Please request a new code.");
+    }
+    if (cached.tokenHash !== tokenHash) {
+      cached.attempts += 1;
+      throw new Error("Invalid 6-digit verification code. Please check your email.");
+    }
+
+    // OTP is valid! Remove from cache so it cannot be reused
+    registrationOtpCache.delete(normalizedEmail);
+    return { success: true };
   });
 
 /** Verifies the 6-digit OTP and updates the user's password directly */

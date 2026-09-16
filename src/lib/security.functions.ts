@@ -1237,7 +1237,7 @@ export const notifyAttendanceChange = createServerFn({ method: "POST" })
             <tr><td style="color:#6b7280; padding: 4px 0;">Roll Number</td><td style="color:#111827; font-weight:600;">${data.attendance.rollNumber}</td></tr>
             <tr><td style="color:#6b7280; padding: 4px 0;">Date</td><td style="color:#111827; font-weight:600;">${data.attendance.date}</td></tr>
             <tr><td style="color:#6b7280; padding: 4px 0;">Status</td><td style="color:${actionColor}; font-weight:600;">${data.attendance.status}</td></tr>
-            <tr><td style="color:#6b7280; padding: 4px 0;">Note</td><td style="color:#111827;">${data.attendance.note || "—"}</td></tr>
+            <tr><td style="color:#6b7280; padding: 4px 0;">Note</td><td style="color:#111827;">${(data.attendance as any).note || "—"}</td></tr>
             <tr><td style="color:#6b7280; padding: 4px 0;">IP Address</td><td style="color:#111827; font-family:monospace;">${ip}</td></tr>
           </table>
         </div>
@@ -1253,7 +1253,7 @@ export const notifyAttendanceChange = createServerFn({ method: "POST" })
       await sendNotificationEmail({
         to: recipients,
         subject: `[Sentinel] Attendance ${actionLabel} — ${data.attendance.name} (${data.attendance.date})`,
-        text: `Attendance record ${action}.\n\nName: ${data.attendance.name}\nRoll Number: ${data.attendance.rollNumber}\nDate: ${data.attendance.date}\nStatus: ${data.attendance.status}\nNote: ${data.attendance.note || "—"}\nIP Address: ${ip}\n\nThis change has been recorded in the audit log.`,
+        text: `Attendance record ${action}.\n\nName: ${data.attendance.name}\nRoll Number: ${data.attendance.rollNumber}\nDate: ${data.attendance.date}\nStatus: ${data.attendance.status}\nNote: ${(data.attendance as any).note || "—"}\nIP Address: ${ip}\n\nThis change has been recorded in the audit log.`,
         html: emailHtml,
       });
       return { delivered: true, ip };
@@ -1270,7 +1270,7 @@ export const setLocationConsent = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const now = new Date().toISOString();
-    let patch: Record<string, unknown> = {
+    let patch: any = {
       location_consent: data.enabled,
       location_consent_at: data.enabled ? now : null,
     };
@@ -1328,7 +1328,7 @@ export const setLocationConsent = createServerFn({ method: "POST" })
       });
     } catch {}
 
-    return { ok: true, patch };
+    return { ok: true };
   });
 
 export const submitLocation = createServerFn({ method: "POST" })
@@ -1432,4 +1432,85 @@ export const terminateOtherSessions = createServerFn({ method: "POST" })
       status: "Trusted",
     });
     return { ok: true };
+  });
+
+export const getMyProfile = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const userId = context.userId;
+
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("*")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (profile) return profile;
+
+    const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+    return {
+      id: userId,
+      email: authUser?.user?.email ?? null,
+      full_name: authUser?.user?.user_metadata?.["full_name"] ?? null,
+      location_consent: false,
+    };
+  });
+
+export const getMySecurityEvents = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ limit: z.number().default(50) }).parse(d ?? {}))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const userId = context.userId;
+
+    const { data: events } = await supabaseAdmin
+      .from("security_events")
+      .select(
+        "id, event_type, ip_address, device_type, browser, os, location_label, latitude, longitude, risk_score, risk_level, risk_reasons, status, created_at",
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(data.limit);
+
+    return events ?? [];
+  });
+
+export const getMyDevices = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const userId = context.userId;
+
+    try {
+      const { data: devices } = await supabaseAdmin
+        .from("devices")
+        .select("*")
+        .eq("user_id", userId)
+        .order("last_seen", { ascending: false });
+
+      if (devices && devices.length > 0) return devices;
+    } catch {}
+
+    return [];
+  });
+
+export const getMyAlerts = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const userId = context.userId;
+
+    try {
+      const { data: alerts } = await supabaseAdmin
+        .from("security_alerts")
+        .select("id, title, description, severity, category, read, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(100);
+
+      return alerts ?? [];
+    } catch {
+      return [];
+    }
   });

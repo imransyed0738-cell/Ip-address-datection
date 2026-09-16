@@ -156,7 +156,7 @@ function Investigation() {
                 <div>
                   <dt className="text-muted-foreground">Last IP checked</dt>
                   <dd className="mt-1 break-all font-mono text-xs">
-                    {ipLookups[0]?.metadata?.tracked_ip ?? ipLookups[0]?.ip_address ?? "—"}
+                    {(ipLookups[0]?.metadata as any)?.tracked_ip ?? ipLookups[0]?.ip_address ?? "—"}
                   </dd>
                 </div>
               </dl>

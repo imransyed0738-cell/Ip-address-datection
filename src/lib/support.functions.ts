@@ -11,8 +11,8 @@ const supportMessageInput = z.object({
 export const sendSupportMessage = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => supportMessageInput.parse(data))
   .handler(async ({ data }) => {
-    const apiKey = process.env.RESEND_API_KEY;
-    const from = process.env.SUPPORT_FROM_EMAIL;
+    const apiKey = process.env["RESEND_API_KEY"];
+    const from = process.env["SUPPORT_FROM_EMAIL"];
 
     if (!apiKey || !from) {
       return { ok: true, delivered: false };

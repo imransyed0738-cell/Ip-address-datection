@@ -17,9 +17,9 @@ function clientIp(): string {
 
 function configuredAdminEmails(): string[] {
   const values = [
-    import.meta.env?.VITE_ADMIN_EMAIL,
-    process.env?.ADMIN_EMAIL,
-    process.env?.VITE_ADMIN_EMAIL,
+    import.meta.env?.["VITE_ADMIN_EMAIL"],
+    process.env?.["ADMIN_EMAIL"],
+    process.env?.["VITE_ADMIN_EMAIL"],
     "syedimranpasha012@gmail.com",
     "sadiq8412pasha@gmail.com",
   ];

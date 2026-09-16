@@ -3,6 +3,12 @@ import { useEffect } from "react";
 
 import { supabase } from "@/integrations/supabase/client";
 import { getDeviceInfo } from "@/lib/device";
+import {
+  getMyAlerts,
+  getMyDevices,
+  getMyProfile,
+  getMySecurityEvents,
+} from "@/lib/security.functions";
 
 export type SecurityEvent = {
   id: string;
@@ -29,12 +35,42 @@ export type SecurityAlert = {
   created_at: string;
 };
 
+export type Profile = {
+  id: string;
+  email: string | null;
+  full_name?: string | null;
+  mobile?: string | null;
+  country?: string | null;
+  state?: string | null;
+  city?: string | null;
+  postal_code?: string | null;
+  location_consent?: boolean;
+  location_consent_at?: string | null;
+  last_lat?: number | null;
+  last_lng?: number | null;
+  last_location_label?: string | null;
+  location_accuracy?: number | null;
+  last_location_at?: string | null;
+  account_locked?: boolean;
+  flagged_for_review?: boolean;
+  require_password_reset?: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export function useProfile() {
-  return useQuery({
+  return useQuery<Profile | null>({
     queryKey: ["profile"],
     refetchOnWindowFocus: true,
-    refetchInterval: 30_000,
-    queryFn: async () => {
+    refetchInterval: 15_000,
+    queryFn: async (): Promise<Profile | null> => {
+      try {
+        const profile = await getMyProfile();
+        if (profile) return profile as Profile;
+      } catch (serverErr) {
+        console.warn("[Profile] getMyProfile server fn fallback:", serverErr);
+      }
+
       const { data: auth } = await supabase.auth.getUser();
       if (!auth.user) return null;
       try {
@@ -46,9 +82,9 @@ export function useProfile() {
         if (error) {
           console.warn("[Profile] Fetch error:", error.message);
         }
-        return data ?? { id: auth.user.id, email: auth.user.email };
+        return (data as Profile) ?? { id: auth.user.id, email: auth.user.email ?? null, location_consent: false };
       } catch {
-        return { id: auth.user.id, email: auth.user.email };
+        return { id: auth.user.id, email: auth.user.email ?? null, location_consent: false };
       }
     },
   });
@@ -59,8 +95,13 @@ export function useSecurityEvents(limit = 50) {
     queryKey: ["security_events", limit],
     retry: 1,
     refetchOnWindowFocus: true,
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
     queryFn: async () => {
+      try {
+        const events = await getMySecurityEvents({ data: { limit } });
+        if (events) return events as unknown as SecurityEvent[];
+      } catch {}
+
       const { data: auth, error: authError } = await supabase.auth.getUser();
       if (authError) throw authError;
       if (!auth.user) throw new Error("Your session is not available. Please sign in again.");
@@ -90,8 +131,13 @@ export function useAlerts() {
     queryKey: ["security_alerts"],
     retry: 1,
     refetchOnWindowFocus: true,
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
     queryFn: async () => {
+      try {
+        const alerts = await getMyAlerts();
+        if (alerts) return alerts as unknown as SecurityAlert[];
+      } catch {}
+
       const { data: auth, error: authError } = await supabase.auth.getUser();
       if (authError) throw authError;
       if (!auth.user) throw new Error("Your session is not available. Please sign in again.");
@@ -117,15 +163,12 @@ export function useDevices() {
   return useQuery({
     queryKey: ["devices"],
     refetchOnWindowFocus: true,
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
     queryFn: async () => {
-      const { data: auth, error: authError } = await supabase.auth.getUser();
-      if (authError) throw authError;
-      if (!auth.user) throw new Error("Your session is not available. Please sign in again.");
       const currentDev = getDeviceInfo();
       const defaultDevice = {
         id: "active-browser-device",
-        user_id: auth.user.id,
+        user_id: "me",
         device_key: currentDev.deviceKey,
         device_name: currentDev.deviceName,
         device_type: currentDev.deviceType,
@@ -136,6 +179,14 @@ export function useDevices() {
         last_seen: new Date().toISOString(),
         created_at: new Date().toISOString(),
       };
+
+      try {
+        const devices = await getMyDevices();
+        if (devices && devices.length > 0) return devices;
+      } catch {}
+
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError || !auth.user) return [defaultDevice];
 
       try {
         const { data, error } = await supabase

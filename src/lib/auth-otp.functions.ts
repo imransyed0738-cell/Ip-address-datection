@@ -169,9 +169,6 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
       throw new Error("Invalid 6-digit verification code. Please check your email.");
     }
 
-    // OTP verified! Clean up cache
-    await deleteOtp(`forgot:${normalizedEmail}`);
-
     // Update password in Supabase
     let updatedByServer = false;
     let errorMessage = "";
@@ -196,20 +193,32 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
       if (!updatedByServer) {
         try {
           const { data: userList, error: listError } = await supabaseAdmin.auth.admin.listUsers();
-          if (!listError && userList?.users) {
-            const foundUser = userList.users.find(
-              (u) => u.email?.toLowerCase() === normalizedEmail
+          const foundUser = userList?.users?.find(
+            (u) => u.email?.toLowerCase() === normalizedEmail
+          );
+
+          if (foundUser) {
+            const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+              foundUser.id,
+              { password: data.password, email_confirm: true }
             );
-            if (foundUser) {
-              const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
-                foundUser.id,
-                { password: data.password }
-              );
-              if (!updateError) {
-                updatedByServer = true;
-              } else {
-                errorMessage = updateError.message;
-              }
+            if (!updateError) {
+              updatedByServer = true;
+            } else {
+              errorMessage = updateError.message;
+            }
+          } else {
+            // User doesn't exist yet in this database - create with the new password!
+            const { data: createdUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
+              email: normalizedEmail,
+              password: data.password,
+              email_confirm: true,
+            });
+
+            if (!createError && createdUser?.user) {
+              updatedByServer = true;
+            } else {
+              errorMessage = createError?.message || "Could not set password for this account";
             }
           }
         } catch (adminErr: any) {
@@ -218,6 +227,9 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
       }
 
       if (updatedByServer) {
+        // OTP verified and password set! Clean up cache
+        await deleteOtp(`forgot:${normalizedEmail}`);
+
         // Send confirmation email via Gmail SMTP
         try {
           const { sendNotificationEmail } = await import("@/lib/mailer.server");
@@ -247,7 +259,7 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
     if (!updatedByServer) {
       throw new Error(
         errorMessage ||
-          "Could not update password in database. Please check that your user account exists."
+          "Could not update password in database. Please check your credentials."
       );
     }
 

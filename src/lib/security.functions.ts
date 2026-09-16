@@ -1514,3 +1514,387 @@ export const getMyAlerts = createServerFn({ method: "GET" })
       return [];
     }
   });
+
+type StoredAttendanceRecord = {
+  id: string;
+  userId?: string | null;
+  name: string;
+  rollNumber: string;
+  date: string;
+  status: "Present" | "Late" | "Absent" | "Leave";
+  note: string;
+  ipAddress: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+async function getLocalAttendanceStoreFile(): Promise<string> {
+  const pathMod = await import("path");
+  return pathMod.join(process.cwd(), ".attendance_store.json");
+}
+
+async function readLocalAttendanceStore(
+  userId: string | null,
+  filters?: { search?: string | undefined; date?: string | undefined; status?: string | undefined },
+): Promise<StoredAttendanceRecord[]> {
+  try {
+    const fs = await import("fs/promises");
+    const filePath = await getLocalAttendanceStoreFile();
+    const content = await fs.readFile(filePath, "utf-8");
+    let records: StoredAttendanceRecord[] = JSON.parse(content);
+    if (userId) {
+      records = records.filter((r) => !r.userId || r.userId === userId);
+    }
+    if (filters?.date) {
+      records = records.filter((r) => r.date === filters.date);
+    }
+    if (filters?.status && filters.status !== "All") {
+      records = records.filter((r) => r.status === filters.status);
+    }
+    if (filters?.search?.trim()) {
+      const q = filters.search.trim().toLowerCase();
+      records = records.filter(
+        (r) =>
+          r.name.toLowerCase().includes(q) ||
+          r.rollNumber.toLowerCase().includes(q) ||
+          r.note.toLowerCase().includes(q),
+      );
+    }
+    return records.sort((a, b) => b.date.localeCompare(a.date));
+  } catch {
+    return [];
+  }
+}
+
+async function saveLocalAttendanceStore(
+  record: StoredAttendanceRecord,
+): Promise<StoredAttendanceRecord> {
+  try {
+    const fs = await import("fs/promises");
+    const filePath = await getLocalAttendanceStoreFile();
+    let records: StoredAttendanceRecord[] = [];
+    try {
+      const content = await fs.readFile(filePath, "utf-8");
+      records = JSON.parse(content);
+    } catch {}
+
+    const index = records.findIndex(
+      (r) => r.id === record.id || (r.date === record.date && r.rollNumber === record.rollNumber),
+    );
+    if (index >= 0) {
+      records[index] = { ...records[index], ...record, updatedAt: new Date().toISOString() };
+    } else {
+      records.unshift(record);
+    }
+    await fs.writeFile(filePath, JSON.stringify(records, null, 2), "utf-8");
+  } catch (err) {
+    console.warn("[attendance] Local file store write error:", err);
+  }
+  return record;
+}
+
+async function deleteLocalAttendanceStore(id: string, userId: string | null): Promise<void> {
+  try {
+    const fs = await import("fs/promises");
+    const filePath = await getLocalAttendanceStoreFile();
+    const content = await fs.readFile(filePath, "utf-8");
+    let records: StoredAttendanceRecord[] = JSON.parse(content);
+    records = records.filter((r) => {
+      if (r.id !== id) return true;
+      if (userId && r.userId && r.userId !== userId) return true;
+      return false;
+    });
+    await fs.writeFile(filePath, JSON.stringify(records, null, 2), "utf-8");
+  } catch {}
+}
+
+async function checkIsAdmin(supabaseAdmin: any, userId: string): Promise<boolean> {
+  try {
+    const { data: hasRole } = await supabaseAdmin.rpc("has_role", {
+      _user_id: userId,
+      _role: "admin",
+    });
+    if (hasRole) return true;
+  } catch {}
+
+  try {
+    const { data: roleRow } = await supabaseAdmin
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .eq("role", "admin")
+      .maybeSingle();
+    if (roleRow) return true;
+  } catch {}
+
+  try {
+    const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+    const email = authUser?.user?.email?.toLowerCase();
+    const adminEmails = [
+      "syedimranpasha012@gmail.com",
+      "sadiq8412pasha@gmail.com",
+      process.env["ADMIN_EMAIL"]?.toLowerCase(),
+      process.env["VITE_ADMIN_EMAIL"]?.toLowerCase(),
+    ].filter(Boolean);
+    if (email && adminEmails.includes(email)) return true;
+  } catch {}
+
+  return false;
+}
+
+export const getAttendanceLogs = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        search: z.string().optional(),
+        date: z.string().optional(),
+        status: z.string().optional(),
+        limit: z.number().default(200),
+      })
+      .parse(d ?? {}),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const userId = context.userId;
+    const isAdmin = await checkIsAdmin(supabaseAdmin, userId);
+
+    try {
+      let query = supabaseAdmin
+        .from("attendance_logs")
+        .select("*")
+        .order("date", { ascending: false })
+        .order("created_at", { ascending: false });
+
+      if (!isAdmin) {
+        query = query.eq("user_id", userId);
+      }
+
+      if (data.date) {
+        query = query.eq("date", data.date);
+      }
+
+      if (data.status && data.status !== "All") {
+        query = query.eq("status", data.status);
+      }
+
+      const { data: logs, error } = await query.limit(data.limit);
+      if (error) throw error;
+
+      let result = (logs ?? []).map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        name: row.name,
+        rollNumber: row.roll_number,
+        date: row.date,
+        status: row.status as "Present" | "Late" | "Absent" | "Leave",
+        note: row.note ?? "",
+        ipAddress: row.ip_address ?? "Unavailable",
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+
+      if (data.search?.trim()) {
+        const q = data.search.trim().toLowerCase();
+        result = result.filter(
+          (r) =>
+            r.name.toLowerCase().includes(q) ||
+            r.rollNumber.toLowerCase().includes(q) ||
+            r.note.toLowerCase().includes(q),
+        );
+      }
+
+      return result;
+    } catch (err: any) {
+      console.warn("[attendance] Supabase query fallback:", err?.message || err);
+      return readLocalAttendanceStore(isAdmin ? null : userId, data);
+    }
+  });
+
+export const saveAttendanceLog = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        id: z.string().optional(),
+        name: z.string().trim().min(1),
+        rollNumber: z.string().trim().min(1),
+        date: z.string().trim().min(1),
+        status: z.enum(["Present", "Late", "Absent", "Leave"]),
+        note: z.string().optional().default(""),
+        ipAddress: z.string().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const userId = context.userId;
+
+    const resolved = await resolvePublicIpAndGeo(clientIp());
+    const ip =
+      resolved.ip && resolved.ip !== "unknown"
+        ? resolved.ip
+        : (data.ipAddress && data.ipAddress !== "Unavailable" && data.ipAddress !== "unknown"
+            ? data.ipAddress
+            : "127.0.0.1");
+
+    const isAdmin = await checkIsAdmin(supabaseAdmin, userId);
+    let userEmail: string | null = null;
+    try {
+      const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+      userEmail = authUser?.user?.email ?? null;
+    } catch {}
+
+    try {
+      let existingRecord: any = null;
+      if (data.id) {
+        const { data: row } = await supabaseAdmin
+          .from("attendance_logs")
+          .select("*")
+          .eq("id", data.id)
+          .maybeSingle();
+        existingRecord = row;
+      }
+      if (!existingRecord) {
+        const { data: row } = await supabaseAdmin
+          .from("attendance_logs")
+          .select("*")
+          .eq("date", data.date)
+          .eq("roll_number", data.rollNumber)
+          .maybeSingle();
+        existingRecord = row;
+      }
+
+      let savedRecord: any = null;
+      const now = new Date().toISOString();
+
+      if (existingRecord) {
+        const { data: updated, error } = await supabaseAdmin
+          .from("attendance_logs")
+          .update({
+            name: data.name,
+            roll_number: data.rollNumber,
+            date: data.date,
+            status: data.status,
+            note: data.note,
+            ip_address: ip,
+            updated_at: now,
+          })
+          .eq("id", existingRecord.id)
+          .select()
+          .single();
+
+        if (error) throw error;
+        savedRecord = updated;
+      } else {
+        const { data: inserted, error } = await supabaseAdmin
+          .from("attendance_logs")
+          .insert({
+            user_id: userId,
+            name: data.name,
+            roll_number: data.rollNumber,
+            date: data.date,
+            status: data.status,
+            note: data.note,
+            ip_address: ip,
+            created_at: now,
+            updated_at: now,
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+        savedRecord = inserted;
+      }
+
+      try {
+        await supabaseAdmin.from("audit_logs").insert({
+          actor_id: userId,
+          actor_role: isAdmin ? "admin" : "user",
+          action: existingRecord ? "ATTENDANCE_MODIFIED" : "ATTENDANCE_RECORDED",
+          resource: `attendance/${data.date}/${data.rollNumber}`,
+          ip_address: ip,
+          result: "success",
+        });
+      } catch {}
+
+      await saveLocalAttendanceStore({
+        id: savedRecord.id,
+        userId: savedRecord.user_id,
+        name: savedRecord.name,
+        rollNumber: savedRecord.roll_number,
+        date: savedRecord.date,
+        status: savedRecord.status as "Present" | "Late" | "Absent" | "Leave",
+        note: savedRecord.note ?? "",
+        ipAddress: savedRecord.ip_address ?? ip,
+        createdAt: savedRecord.created_at,
+        updatedAt: savedRecord.updated_at,
+      });
+
+      return {
+        ok: true,
+        record: {
+          id: savedRecord.id,
+          userId: savedRecord.user_id,
+          name: savedRecord.name,
+          rollNumber: savedRecord.roll_number,
+          date: savedRecord.date,
+          status: savedRecord.status as "Present" | "Late" | "Absent" | "Leave",
+          note: savedRecord.note ?? "",
+          ipAddress: savedRecord.ip_address ?? ip,
+          createdAt: savedRecord.created_at,
+          updatedAt: savedRecord.updated_at,
+        },
+      };
+    } catch (err: any) {
+      console.warn("[attendance] Supabase insert/update fallback:", err?.message || err);
+      const fallbackRecord = await saveLocalAttendanceStore({
+        id: data.id || `att-${data.date}-${data.rollNumber}-${Date.now()}`,
+        userId,
+        name: data.name,
+        rollNumber: data.rollNumber,
+        date: data.date,
+        status: data.status,
+        note: data.note,
+        ipAddress: ip,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      return { ok: true, record: fallbackRecord };
+    }
+  });
+
+export const deleteAttendanceLog = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ id: z.string().min(1) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const userId = context.userId;
+
+    const isAdmin = await checkIsAdmin(supabaseAdmin, userId);
+
+    try {
+      let query = supabaseAdmin.from("attendance_logs").delete().eq("id", data.id);
+      if (!isAdmin) {
+        query = query.eq("user_id", userId);
+      }
+      await query;
+
+      try {
+        await supabaseAdmin.from("audit_logs").insert({
+          actor_id: userId,
+          actor_role: isAdmin ? "admin" : "user",
+          action: "ATTENDANCE_DELETED",
+          resource: `attendance/${data.id}`,
+          ip_address: clientIp(),
+          result: "success",
+        });
+      } catch {}
+    } catch (err: any) {
+      console.warn("[attendance] Supabase delete fallback:", err?.message || err);
+    }
+
+    await deleteLocalAttendanceStore(data.id, isAdmin ? null : userId);
+    return { ok: true };
+  });
+

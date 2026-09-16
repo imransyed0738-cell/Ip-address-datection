@@ -8,7 +8,6 @@ import {
   Crosshair,
   Globe2,
   Lock,
-  Mail,
   MapPin,
   Settings,
   ShieldCheck,
@@ -36,11 +35,11 @@ import { getDeviceInfo } from "@/lib/device";
 import {
   getConnectionInfo,
   lookupIpAddress,
-  lookupMobileDevices,
-  sendMobileTrackingConsent,
   lockAccount,
   recordSecurityEvent,
   terminateOtherSessions,
+  getAttendanceLogs,
+  saveAttendanceLog,
 } from "@/lib/security.functions";
 import {
   formatWhen,
@@ -78,8 +77,6 @@ function Dashboard() {
   const devices = useDevices();
   const [confirmLock, setConfirmLock] = useState(false);
   const [ipToTrack, setIpToTrack] = useState("");
-  const [mobileToTrack, setMobileToTrack] = useState("");
-  const [consentEmail, setConsentEmail] = useState<string | null>(null);
 
   const connFn = useServerFn(getConnectionInfo);
   const conn = useQuery({
@@ -91,41 +88,6 @@ function Dashboard() {
   const ipLookup = useMutation({
     mutationFn: (ip: string) => lookupFn({ data: { ip } }),
     onError: (error: Error) => toast.error("IP lookup failed", { description: error.message }),
-  });
-  const mobileLookupFn = useServerFn(lookupMobileDevices);
-  const sendConsentFn = useServerFn(sendMobileTrackingConsent);
-  const sendConsent = useMutation({
-    mutationFn: (mobile: string) => sendConsentFn({ data: { mobile } }),
-    onSuccess: (result) => {
-      setConsentEmail(result.sentTo);
-      toast.success("Verification link sent", { description: `Sent to ${result.sentTo}` });
-    },
-    onError: (error: Error) => toast.error("Could not send verification link", { description: error.message }),
-  });
-  const mobileLookup = useMutation({
-    mutationFn: (mobile: string) => mobileLookupFn({ data: { mobile } }),
-    onSuccess: async (lookupResult) => {
-      try {
-        await eventFn({
-          data: {
-            eventType: "SECURITY_ALERT",
-            device: getDeviceInfo(),
-            note: `Mobile device lookup: ${lookupResult.devices.length} registered device${lookupResult.devices.length === 1 ? "" : "s"} found`,
-          },
-        });
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["devices"] }),
-          queryClient.invalidateQueries({ queryKey: ["security_events"] }),
-          queryClient.invalidateQueries({ queryKey: ["security_alerts"] }),
-        ]);
-        toast.success("Mobile lookup added to security activity");
-      } catch (error) {
-        toast.error("Lookup succeeded, but activity could not be updated", {
-          description: error instanceof Error ? error.message : "Try refreshing the dashboard.",
-        });
-      }
-    },
-    onError: (error: Error) => toast.error("Mobile lookup failed", { description: error.message }),
   });
 
   const mfa = useQuery({
@@ -201,6 +163,60 @@ function Dashboard() {
       void queryClient.invalidateQueries({ queryKey: ["security_events"] });
     },
     onError: (e: Error) => toast.error("Could not sign out sessions", { description: e.message }),
+  });
+
+  // User Dashboard Attendance
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [attDate, setAttDate] = useState(todayStr);
+  const [attRoll, setAttRoll] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("sentinel_user_roll") || "";
+    }
+    return "";
+  });
+  const [attName, setAttName] = useState("");
+  const [attStatus, setAttStatus] = useState<"Present" | "Late" | "Absent" | "Leave">("Present");
+  const [attNote, setAttNote] = useState("");
+
+  const getAttendanceFn = useServerFn(getAttendanceLogs);
+  const saveAttendanceFn = useServerFn(saveAttendanceLog);
+
+  const userAttendance = useQuery({
+    queryKey: ["attendance", "logs", "user"],
+    queryFn: async () => {
+      const res = await getAttendanceFn({ data: { limit: 10 } });
+      return (res ?? []) as any[];
+    },
+    refetchInterval: 10000,
+  });
+
+  useEffect(() => {
+    if (profile.data?.full_name && !attName) {
+      setAttName(profile.data.full_name);
+    }
+  }, [profile.data?.full_name, attName]);
+
+  const saveAttMutation = useMutation({
+    mutationFn: (payload: {
+      name: string;
+      rollNumber: string;
+      date: string;
+      status: "Present" | "Late" | "Absent" | "Leave";
+      note?: string;
+      ipAddress?: string;
+    }) => saveAttendanceFn({ data: payload }),
+    onSuccess: (res, vars) => {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("sentinel_user_roll", vars.rollNumber);
+      }
+      toast.success(`Attendance marked as ${vars.status} for ${vars.date}`);
+      setAttNote("");
+      void queryClient.invalidateQueries({ queryKey: ["attendance"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "recentAttendance"] });
+    },
+    onError: (err: Error) => {
+      toast.error("Failed to submit attendance", { description: err.message });
+    },
   });
 
   const unread = (alerts.data ?? []).filter((a) => !a.read).length;
@@ -342,6 +358,172 @@ function Dashboard() {
         </div>
       </section>
 
+      {/* Daily Attendance Check-In Section */}
+      <section className="panel mt-6 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <ClipboardCheck className="size-5 text-accent" />
+              <p className="label-caps">Attendance System</p>
+            </div>
+            <h2 className="mt-2 text-lg font-semibold">Mark your daily attendance</h2>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Submit your attendance for today. Your record is securely saved and automatically monitored by administrators in real time.
+            </p>
+          </div>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/user/attendance">
+              Full attendance history →
+            </Link>
+          </Button>
+        </div>
+
+        <form
+          className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 xl:items-end"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!attName.trim() || !attRoll.trim() || !attDate) return;
+            saveAttMutation.mutate({
+              name: attName.trim(),
+              rollNumber: attRoll.trim(),
+              date: attDate,
+              status: attStatus,
+              note: attNote.trim(),
+              ipAddress: conn.data?.ip ?? "Unavailable",
+            });
+          }}
+        >
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="dash-att-name">
+              Full name
+            </label>
+            <Input
+              id="dash-att-name"
+              placeholder="Your name"
+              value={attName}
+              onChange={(e) => setAttName(e.target.value)}
+              required
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="dash-att-roll">
+              Roll / Employee ID
+            </label>
+            <Input
+              id="dash-att-roll"
+              placeholder="e.g. CS-024 / EMP-101"
+              value={attRoll}
+              onChange={(e) => setAttRoll(e.target.value)}
+              required
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="dash-att-date">
+              Date
+            </label>
+            <Input
+              id="dash-att-date"
+              type="date"
+              value={attDate}
+              onChange={(e) => setAttDate(e.target.value)}
+              required
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="dash-att-status">
+              Status
+            </label>
+            <select
+              id="dash-att-status"
+              value={attStatus}
+              onChange={(e) => setAttStatus(e.target.value as any)}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="Present">Present</option>
+              <option value="Late">Late</option>
+              <option value="Absent">Absent</option>
+              <option value="Leave">Leave</option>
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="dash-att-note">
+              Note (optional)
+            </label>
+            <Input
+              id="dash-att-note"
+              placeholder="Add short note…"
+              value={attNote}
+              onChange={(e) => setAttNote(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={saveAttMutation.isPending}
+            >
+              {saveAttMutation.isPending ? "Submitting…" : "Mark attendance"}
+            </Button>
+          </div>
+        </form>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <span className="inline-block size-2 rounded-full bg-success"></span>
+            <span>Observed public IP: <strong className="font-mono text-foreground">{conn.data?.ip ?? "Detecting…"}</strong></span>
+          </div>
+          <span>Stored centrally &bull; Live sync with Admin Dashboard</span>
+        </div>
+
+        {/* Recent Attendance Mini Table */}
+        {(userAttendance.data ?? []).length > 0 && (
+          <div className="mt-5 border-t border-border pt-4">
+            <h3 className="text-xs font-semibold uppercase text-muted-foreground">Your Recent Check-Ins</h3>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="py-1.5">Date</th>
+                    <th className="py-1.5">Roll / ID</th>
+                    <th className="py-1.5">Status</th>
+                    <th className="py-1.5">Note</th>
+                    <th className="py-1.5">Observed IP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(userAttendance.data ?? []).slice(0, 3).map((r: any) => (
+                    <tr key={r.id} className="border-t border-border">
+                      <td className="py-2 font-medium">{r.date}</td>
+                      <td className="py-2 font-mono text-xs">{r.rollNumber}</td>
+                      <td className="py-2">
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                            r.status === "Present"
+                              ? "bg-success/10 text-success"
+                              : r.status === "Late"
+                                ? "bg-warning/20 text-warning-foreground"
+                                : "bg-destructive/10 text-destructive"
+                          }`}
+                        >
+                          {r.status}
+                        </span>
+                      </td>
+                      <td className="py-2 text-xs text-muted-foreground">{r.note || "—"}</td>
+                      <td className="py-2 font-mono text-xs text-muted-foreground">{r.ipAddress || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </section>
+
       <section className="panel mt-6 p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -395,119 +577,6 @@ function Dashboard() {
         {ipLookup.isError && (
           <p className="mt-4 text-sm text-destructive" role="alert">
             {ipLookup.error.message}
-          </p>
-        )}
-      </section>
-
-      <section className="panel mt-6 p-5">
-        <div className="flex items-start gap-3">
-          <Smartphone className="mt-0.5 size-5 text-accent" />
-          <div>
-            <p className="label-caps">Mobile tracker</p>
-            <h2 className="mt-2 text-lg font-semibold">Find your registered mobile devices</h2>
-            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Enter a mobile number and send a consent link to the signed-in account email. After
-              approval, return here to view its registered device names, location, and public IP.
-            </p>
-            <Button asChild className="mt-4" variant="outline" size="sm">
-              <Link to="/auth">Create your verified security account</Link>
-            </Button>
-          </div>
-        </div>
-
-        <form
-          className="mt-5 flex flex-col gap-2 sm:flex-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const mobile = mobileToTrack.trim();
-            if (mobile) mobileLookup.mutate(mobile);
-          }}
-        >
-          <Input
-            className="sm:max-w-md"
-            type="tel"
-            placeholder="Your account mobile number"
-            aria-label="Account mobile number"
-            value={mobileToTrack}
-            onChange={(event) => setMobileToTrack(event.target.value)}
-          />
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!mobileToTrack.trim() || sendConsent.isPending}
-              onClick={() => sendConsent.mutate(mobileToTrack.trim())}
-            >
-              <Mail className="mr-2 size-4" />
-              {sendConsent.isPending ? "Sending…" : "Send verification link"}
-            </Button>
-            <Button type="submit" disabled={!mobileToTrack.trim() || mobileLookup.isPending}>
-              <Smartphone className="mr-2 size-4" />
-              {mobileLookup.isPending ? "Checking…" : "Track mobile"}
-            </Button>
-          </div>
-        </form>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Use the number registered on your verified account. New users can create an account,
-          confirm their email, and then track their own device.
-        </p>
-        {consentEmail && (
-          <p className="mt-2 text-sm text-success" role="status">
-            Verification link sent to <strong>{consentEmail}</strong>.
-          </p>
-        )}
-
-        {mobileLookup.data && (
-          <div className="mt-5 border-t border-border">
-            <div className="grid gap-3 py-4 sm:grid-cols-2">
-              <LookupDetail
-                label="Last consented location"
-                value={mobileLookup.data.location?.label ?? "Location sharing is disabled"}
-              />
-              <LookupDetail
-                label="Location updated"
-                value={
-                  mobileLookup.data.location?.updatedAt
-                    ? formatWhen(mobileLookup.data.location.updatedAt)
-                    : "No location update available"
-                }
-              />
-            </div>
-            {mobileLookup.data.location?.latitude != null &&
-              mobileLookup.data.location.longitude != null && (
-                <a
-                  className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-accent hover:underline"
-                  href={`https://www.google.com/maps?q=${mobileLookup.data.location.latitude},${mobileLookup.data.location.longitude}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <MapPin className="size-4" /> Open location on map
-                </a>
-              )}
-            <div className="divide-y divide-border border-t border-border">
-              {mobileLookup.data.devices.length === 0 && (
-                <p className="py-4 text-sm text-muted-foreground">No registered devices found.</p>
-              )}
-              {mobileLookup.data.devices.map((device) => (
-                <div key={device.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-3 text-sm">
-                  <span className="font-medium">{device.device_name ?? "Unnamed device"}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {device.device_type ?? "Unknown"} · {device.browser ?? "—"} · {device.os ?? "—"}
-                  </span>
-                  <span className="font-mono text-xs text-muted-foreground">
-                    Public IP: {device.last_ip ?? "Unknown"}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {device.last_seen ? formatWhen(device.last_seen) : "Last seen unknown"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {mobileLookup.isError && (
-          <p className="mt-4 text-sm text-destructive" role="alert">
-            {mobileLookup.error.message}
           </p>
         )}
       </section>

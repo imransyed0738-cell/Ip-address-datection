@@ -14,6 +14,45 @@ export type Database = {
   }
   public: {
     Tables: {
+      attendance_logs: {
+        Row: {
+          created_at: string
+          date: string
+          id: string
+          ip_address: string | null
+          name: string
+          note: string | null
+          roll_number: string
+          status: string
+          updated_at: string
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          date: string
+          id?: string
+          ip_address?: string | null
+          name: string
+          note?: string | null
+          roll_number: string
+          status?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          date?: string
+          id?: string
+          ip_address?: string | null
+          name?: string
+          note?: string | null
+          roll_number?: string
+          status?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       admin_notes: {
         Row: {
           admin_id: string

@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ArrowLeft, FileDown } from "lucide-react";
+import { ArrowLeft, ClipboardCheck, FileDown } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -9,6 +9,7 @@ import { AdminShell, RiskBadge } from "@/components/AdminShell";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { adminUserAction, adminUserDetail } from "@/lib/admin.functions";
+import { getAttendanceLogs } from "@/lib/security.functions";
 import { formatWhen, prettyEvent } from "@/lib/user-data";
 
 export const Route = createFileRoute("/_authenticated/admin/users/$id")({
@@ -42,12 +43,18 @@ function Investigation() {
   const { id } = useParams({ from: "/_authenticated/admin/users/$id" });
   const detail = useServerFn(adminUserDetail);
   const act = useServerFn(adminUserAction);
+  const getLogsFn = useServerFn(getAttendanceLogs);
   const qc = useQueryClient();
   const [note, setNote] = useState("");
 
   const { data, error, isError, isLoading, refetch } = useQuery({
     queryKey: ["admin", "user", id],
     queryFn: () => detail({ data: { userId: id } }),
+  });
+
+  const attendanceQuery = useQuery({
+    queryKey: ["admin", "userAttendance", id],
+    queryFn: () => getLogsFn({ data: { limit: 100 } }),
   });
 
   const action = useMutation({
@@ -355,6 +362,86 @@ function Investigation() {
               </ul>
             </Panel>
           </div>
+
+          <Panel title="User attendance history">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs text-muted-foreground">
+                Attendance logs recorded by or linked to this user.
+              </p>
+              <Link
+                to="/admin/attendance"
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                View all in attendance dashboard →
+              </Link>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="py-2">Date</th>
+                    <th className="py-2">Name</th>
+                    <th className="py-2">Roll / ID</th>
+                    <th className="py-2">Status</th>
+                    <th className="py-2">Note</th>
+                    <th className="py-2">IP Address</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {attendanceQuery.isLoading ? (
+                    <tr>
+                      <td colSpan={6} className="py-4 text-center text-muted-foreground">
+                        Loading attendance history…
+                      </td>
+                    </tr>
+                  ) : (attendanceQuery.data ?? []).filter(
+                      (r: any) =>
+                        r.userId === id ||
+                        (p?.email && r.note?.toLowerCase().includes(p.email.toLowerCase())) ||
+                        (p?.full_name && r.name?.toLowerCase().includes(p.full_name.toLowerCase())),
+                    ).length ? (
+                    (attendanceQuery.data ?? [])
+                      .filter(
+                        (r: any) =>
+                          r.userId === id ||
+                          (p?.email && r.note?.toLowerCase().includes(p.email.toLowerCase())) ||
+                          (p?.full_name && r.name?.toLowerCase().includes(p.full_name.toLowerCase())),
+                      )
+                      .map((record: any) => (
+                        <tr key={record.id} className="border-t border-border">
+                          <td className="whitespace-nowrap py-2 font-medium">{record.date}</td>
+                          <td className="py-2">{record.name}</td>
+                          <td className="py-2 font-mono text-xs">{record.rollNumber}</td>
+                          <td className="py-2">
+                            <span
+                              className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                                record.status === "Present"
+                                  ? "bg-success/10 text-success"
+                                  : record.status === "Late"
+                                    ? "bg-warning/20 text-warning-foreground"
+                                    : "bg-destructive/10 text-destructive"
+                              }`}
+                            >
+                              {record.status}
+                            </span>
+                          </td>
+                          <td className="py-2 text-xs text-muted-foreground">{record.note || "—"}</td>
+                          <td className="py-2 font-mono text-xs text-muted-foreground">
+                            {record.ipAddress || "—"}
+                          </td>
+                        </tr>
+                      ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6} className="py-4 text-center text-muted-foreground">
+                        No attendance records recorded for this user yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
         </div>
       )}
     </AdminShell>

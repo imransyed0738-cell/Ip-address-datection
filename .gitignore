@@ -27,3 +27,5 @@ pnpm-debug.log*
 !.vscode/extensions.json
 .idea/
 .DS_Store
+.otp-storage.json
+.attendance_store.json

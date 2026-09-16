@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Activity, ClipboardCheck, Crosshair, Globe2, Lock, MapPin, ShieldAlert, Users } from "lucide-react";
+import { Activity, ArrowRight, ClipboardCheck, Crosshair, Globe2, Lock, MapPin, ShieldAlert, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -10,7 +10,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { adminOverview } from "@/lib/admin.functions";
 import { useAdminRealtime } from "@/lib/admin-realtime";
-import { lookupIpAddress } from "@/lib/security.functions";
+import { getAttendanceLogs, lookupIpAddress } from "@/lib/security.functions";
 import { formatWhen, prettyEvent } from "@/lib/user-data";
 
 export const Route = createFileRoute("/_authenticated/admin/dashboard")({
@@ -45,12 +45,18 @@ function Stat({ label, value, icon: Icon }: { label: string; value: number; icon
 function AdminDashboard() {
   const load = useServerFn(adminOverview);
   const lookupFn = useServerFn(lookupIpAddress);
+  const getLogsFn = useServerFn(getAttendanceLogs);
   const realtimeStatus = useAdminRealtime();
   const [ipToTrack, setIpToTrack] = useState("");
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "overview"],
     queryFn: () => load(),
     refetchInterval: 5000,
+  });
+  const attendanceQuery = useQuery({
+    queryKey: ["admin", "recentAttendance"],
+    queryFn: () => getLogsFn({ data: { limit: 10 } }),
+    refetchInterval: 10000,
   });
   const ipLookup = useMutation({
     mutationFn: (ip: string) => lookupFn({ data: { ip } }),
@@ -279,6 +285,103 @@ function AdminDashboard() {
           </table>
         </div>
       </section>
+
+      {/* Central Attendance History Section */}
+      <section className="panel mt-8 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <ClipboardCheck className="size-5 text-accent" />
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold text-lg">Central User Attendance History</h2>
+                <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary">
+                  {(attendanceQuery.data ?? []).length} Records
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                All attendance submitted by users or admins across the platform, persisted in real time.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button asChild variant="outline" size="sm">
+              <Link to="/admin/attendance">
+                Full attendance dashboard <ArrowRight className="ml-1 size-3.5" />
+              </Link>
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs uppercase text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2">Student / User</th>
+                <th className="px-3 py-2">Roll / ID</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Note</th>
+                <th className="px-3 py-2">Observed IP</th>
+                <th className="px-3 py-2">Recorded</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attendanceQuery.isLoading ? (
+                <tr>
+                  <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                    Loading attendance records…
+                  </td>
+                </tr>
+              ) : (attendanceQuery.data ?? []).length ? (
+                (attendanceQuery.data ?? []).map((record: any) => (
+                  <tr key={record.id} className="border-t border-border hover:bg-muted/30 transition-colors">
+                    <td className="whitespace-nowrap px-3 py-2 font-medium">
+                      {record.date}
+                    </td>
+                    <td className="px-3 py-2 font-medium">
+                      {record.name}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {record.rollNumber}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          record.status === "Present"
+                            ? "bg-success/10 text-success"
+                            : record.status === "Late"
+                              ? "bg-warning/20 text-warning-foreground"
+                              : record.status === "Absent"
+                                ? "bg-destructive/10 text-destructive"
+                                : "bg-secondary text-muted-foreground"
+                        }`}
+                      >
+                        {record.status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      {record.note || "—"}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
+                      {record.ipAddress || "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
+                      {record.createdAt ? formatWhen(record.createdAt) : "—"}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                    No attendance records logged yet. Records submitted on the User or Admin Attendance pages will appear here in real time.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </AdminShell>
   );
 }
+

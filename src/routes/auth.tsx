@@ -12,12 +12,14 @@ import { supabase } from "@/integrations/supabase/client";
 import { getDeviceInfo } from "@/lib/device";
 import {
   recordSecurityEvent,
+  sendWelcomeRegistrationEmail,
+} from "@/lib/security.functions";
+import {
   sendForgotPasswordOtp,
   sendRegistrationOtp,
   verifyRegistrationOtp,
   resetPasswordWithOtp,
-  sendWelcomeRegistrationEmail,
-} from "@/lib/security.functions";
+} from "@/lib/auth-otp.functions";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -463,12 +465,24 @@ function AuthPage() {
       });
 
       if (result?.updatedByServer) {
-        // Server had service role and updated password successfully
-        setBusy(false);
         setRecoveryEmail(null);
         toast.success("Password reset successfully! 🎉", {
-          description: "A confirmation email has been sent. You can now sign in with your new password.",
+          description: "Signing you into your dashboard...",
         });
+
+        const { error: signInErr } = await supabase.auth.signInWithPassword({
+          email: recoveryEmail,
+          password,
+        });
+
+        setBusy(false);
+
+        if (!signInErr) {
+          await afterSignIn();
+          navigate({ to: "/user/dashboard", replace: true });
+        } else {
+          toast.info("Password updated!", { description: "Please sign in with your new password." });
+        }
         return;
       }
 

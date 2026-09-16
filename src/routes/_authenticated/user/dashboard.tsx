@@ -81,7 +81,12 @@ function Dashboard() {
   const [mobileToTrack, setMobileToTrack] = useState("");
   const [consentEmail, setConsentEmail] = useState<string | null>(null);
 
-  const conn = useQuery({ queryKey: ["conn"], queryFn: () => getConnectionInfo() });
+  const connFn = useServerFn(getConnectionInfo);
+  const conn = useQuery({
+    queryKey: ["conn"],
+    queryFn: () => connFn(),
+    refetchInterval: 10000,
+  });
   const lookupFn = useServerFn(lookupIpAddress);
   const ipLookup = useMutation({
     mutationFn: (ip: string) => lookupFn({ data: { ip } }),
@@ -210,6 +215,9 @@ function Dashboard() {
     (trustedDevices > 0 ? 15 : 0) +
     (unread === 0 ? 10 : 0);
 
+  const lat = profile.data?.last_lat as number | null | undefined;
+  const lng = profile.data?.last_lng as number | null | undefined;
+
   return (
     <AppShell unread={unread}>
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -234,13 +242,17 @@ function Dashboard() {
         </div>
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-3">
+      <div className="mt-6 grid gap-4 lg:grid-cols-4">
         <QuickLink
           to="/user/security/location"
           icon={MapPin}
           label="Live geo tracking"
           value={profile.data?.location_consent ? "Enabled" : "Enable location"}
-          detail={profile.data?.last_location_label ?? "Consent-based device location"}
+          detail={
+            profile.data?.last_location_label ||
+            conn.data?.location ||
+            "Consent-based device location"
+          }
           tone={profile.data?.location_consent ? "success" : "warning"}
         />
         <QuickLink
@@ -265,6 +277,70 @@ function Dashboard() {
           detail="Record your attendance for any date"
         />
       </div>
+
+      <section className="panel mt-6 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <MapPin className="size-5 text-accent" />
+              <p className="label-caps">Geo Location & Network</p>
+            </div>
+            <h2 className="mt-2 text-lg font-semibold">Live device location & public IP</h2>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Real-time geographic location and connection security for your active session and account protection.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button asChild variant="outline" size="sm">
+              <Link to="/user/security/location">
+                <MapPin className="mr-2 size-4" />
+                Location settings
+              </Link>
+            </Button>
+            {lat != null && lng != null && (
+              <Button asChild size="sm">
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Globe2 className="mr-2 size-4" />
+                  Open in Google Maps
+                </a>
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 border-t border-border pt-5 sm:grid-cols-2 lg:grid-cols-4">
+          <LookupDetail
+            label="Location status"
+            value={profile.data?.location_consent ? "Live monitoring enabled" : "Network IP location"}
+          />
+          <LookupDetail
+            label="Current public IP"
+            value={conn.data?.ip ?? "Detecting public IP…"}
+            mono
+          />
+          <LookupDetail
+            label="Approximate location"
+            value={
+              profile.data?.last_location_label ||
+              conn.data?.location ||
+              ([profile.data?.city, profile.data?.country].filter(Boolean).join(", ") || "Detecting location…")
+            }
+          />
+          <LookupDetail
+            label="Coordinates"
+            value={
+              lat != null && lng != null
+                ? `${Number(lat).toFixed(4)}° ${Number(lat) >= 0 ? "N" : "S"}, ${Number(lng).toFixed(4)}° ${Number(lng) >= 0 ? "E" : "W"}`
+                : "Active via IP"
+            }
+            mono
+          />
+        </div>
+      </section>
 
       <section className="panel mt-6 p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -492,7 +568,7 @@ function Dashboard() {
           icon={MapPin}
           label="Location monitoring"
           value={profile.data?.location_consent ? "Enabled" : "Off"}
-          hint={profile.data?.last_location_label ?? "No consented location"}
+          hint={profile.data?.last_location_label || conn.data?.location || "No consented location"}
           tone={profile.data?.location_consent ? "success" : "muted"}
         />
         <Stat icon={Smartphone} label="Registered devices" value={String(devices.data?.length ?? 0)} hint={`${trustedDevices} trusted`} />
@@ -501,7 +577,7 @@ function Dashboard() {
           icon={Globe2}
           label="Current IP"
           value={conn.data?.ip ?? "…"}
-          hint={conn.data?.location ?? "Region unavailable"}
+          hint={conn.data?.location || profile.data?.last_location_label || "Region unavailable"}
         />
         <Stat
           icon={Activity}

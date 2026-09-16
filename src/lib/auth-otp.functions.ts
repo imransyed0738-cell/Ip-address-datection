@@ -254,6 +254,7 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
       }
     } catch (e: any) {
       console.error("[Auth] Reset password error:", e);
+      errorMessage = errorMessage || e?.message || "Unknown error resetting password";
     }
 
     if (!updatedByServer) {

@@ -1,3 +1,4 @@
+import "./env.server";
 import nodemailer from "nodemailer";
 
 export interface SendEmailOptions {

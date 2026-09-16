@@ -251,7 +251,7 @@ export const adminOverview = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdmin(context as any);
-    const db = context.supabase;
+    const db = await admin();
     const since = new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString();
 
     const [{ count: users }, { count: events24 }, { data: recent }, { data: locked }, { data: activeLogins }] =
@@ -292,7 +292,7 @@ export const adminListUsers = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdmin(context as any);
-    const db = context.supabase;
+    const db = await admin();
     const { data: mergedProfiles, error: profilesError } = await db
       .from("profiles")
       .select(
@@ -311,8 +311,11 @@ export const adminListUsers = createServerFn({ method: "GET" })
       .order("created_at", { ascending: false })
       .limit(1000);
     if (eventsError) throw eventsError;
-    const { data: devices, error: devicesError } = await db.from("devices").select("user_id");
-    if (devicesError) throw devicesError;
+    let devices: any[] = [];
+    try {
+      const { data: devList } = await db.from("devices").select("user_id");
+      devices = devList ?? [];
+    } catch {}
 
     return profiles.map((p: any) => {
       const own = (events ?? []).filter((e: any) => e.user_id === p.id);
@@ -467,7 +470,7 @@ export const adminSecurityEvents = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     await assertAdmin(context as any);
-    const db = context.supabase;
+    const db = await admin();
     let q = db
       .from("security_events")
       .select("*")
@@ -491,7 +494,7 @@ export const adminAuditLog = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdmin(context as any);
-    const db = context.supabase;
+    const db = await admin();
     try {
       const { data } = await db
         .from("audit_logs")

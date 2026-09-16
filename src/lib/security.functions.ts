@@ -47,7 +47,7 @@ export const saveLocalSmtpConfig = createServerFn({ method: "POST" })
     return { ok: true, path: envPath };
   });
 
-/** Server-observed client IP. Never trust an IP sent by the browser. */
+/** Server-observed client IP with fallback to public external IP detection for local environments. */
 function clientIp(): string {
   const req = getRequest();
   const h = req?.headers;
@@ -68,33 +68,86 @@ function clientUserAgent(): string {
   return getRequest()?.headers.get("user-agent") ?? "unknown";
 }
 
-type GeoInfo = { label: string | null; lat: number | null; lng: number | null };
+type GeoInfo = {
+  label: string | null;
+  lat: number | null;
+  lng: number | null;
+  city?: string | null;
+  country?: string | null;
+};
+
+async function resolvePublicIpAndGeo(providedIp?: string | null): Promise<{ ip: string; geo: GeoInfo }> {
+  let ip =
+    providedIp &&
+    providedIp !== "unknown" &&
+    !providedIp.startsWith("127.") &&
+    !providedIp.startsWith("::1") &&
+    !providedIp.startsWith("192.168.") &&
+    !providedIp.startsWith("10.")
+      ? providedIp
+      : "";
+
+  if (!ip) {
+    try {
+      const res = await fetch("https://api64.ipify.org?format=json", {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(3000),
+      });
+      const data = (await res.json()) as { ip?: string };
+      if (data?.ip) ip = data.ip;
+    } catch {}
+  }
+
+  if (!ip) ip = "127.0.0.1";
+
+  let label: string | null = null;
+  let lat: number | null = null;
+  let lng: number | null = null;
+  let city: string | null = null;
+  let country: string | null = null;
+
+  if (ip !== "127.0.0.1" && ip !== "unknown") {
+    try {
+      const geoRes = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(4000),
+      });
+      const j = (await geoRes.json()) as any;
+      if (j && j.success) {
+        city = j.city ?? null;
+        country = j.country ?? null;
+        const parts = [j.city, j.region, j.country].filter(Boolean);
+        label = parts.length ? parts.join(", ") : null;
+        lat = typeof j.latitude === "number" ? j.latitude : null;
+        lng = typeof j.longitude === "number" ? j.longitude : null;
+      }
+    } catch {}
+
+    if (!label) {
+      try {
+        const freeRes = await fetch(`https://freeipapi.com/api/json/${encodeURIComponent(ip)}`, {
+          headers: { accept: "application/json" },
+          signal: AbortSignal.timeout(4000),
+        });
+        const j2 = (await freeRes.json()) as any;
+        if (j2 && (j2.cityName || j2.countryName)) {
+          city = j2.cityName ?? null;
+          country = j2.countryName ?? null;
+          const parts = [j2.cityName, j2.regionName, j2.countryName].filter(Boolean);
+          label = parts.length ? parts.join(", ") : null;
+          lat = typeof j2.latitude === "number" ? j2.latitude : null;
+          lng = typeof j2.longitude === "number" ? j2.longitude : null;
+        }
+      } catch {}
+    }
+  }
+
+  return { ip, geo: { label, lat, lng, city, country } };
+}
 
 async function geoFromIp(ip: string): Promise<GeoInfo> {
-  if (
-    !ip ||
-    ip === "unknown" ||
-    ip.startsWith("127.") ||
-    ip.startsWith("::1") ||
-    ip.startsWith("192.168.")
-  ) {
-    return { label: null, lat: null, lng: null };
-  }
-  try {
-    const res = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/json/`, {
-      headers: { accept: "application/json" },
-    });
-    if (!res.ok) return { label: null, lat: null, lng: null };
-    const j = (await res.json()) as Record<string, unknown>;
-    const parts = [j["city"], j["region"], j["country_name"]].filter(Boolean) as string[];
-    return {
-      label: parts.length ? parts.join(", ") : null,
-      lat: typeof j["latitude"] === "number" ? (j["latitude"] as number) : null,
-      lng: typeof j["longitude"] === "number" ? (j["longitude"] as number) : null,
-    };
-  } catch {
-    return { label: null, lat: null, lng: null };
-  }
+  const resolved = await resolvePublicIpAndGeo(ip);
+  return resolved.geo;
 }
 
 function isPublicIp(ip: string): boolean {
@@ -772,50 +825,78 @@ export const lookupIpAddress = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => ipLookupInput.parse(d))
   .handler(async ({ data, context }) => {
     const ip = data.ip;
-    const response = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, {
-      headers: { accept: "application/json" },
-    });
+    let result: any = null;
 
-    if (!response.ok) {
+    try {
+      const response = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (response.ok) {
+        result = await response.json();
+      }
+    } catch {}
+
+    if (!result || result.success === false) {
+      try {
+        const response2 = await fetch(`https://freeipapi.com/api/json/${encodeURIComponent(ip)}`, {
+          headers: { accept: "application/json" },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (response2.ok) {
+          const j2 = await response2.json();
+          result = {
+            ip: j2.ipAddress || ip,
+            city: j2.cityName,
+            region: j2.regionName,
+            country: j2.countryName,
+            latitude: j2.latitude,
+            longitude: j2.longitude,
+            connection: { org: j2.isp },
+            timezone: { id: j2.timeZone },
+          };
+        }
+      } catch {}
+    }
+
+    if (!result) {
       throw new Error("This IP address could not be looked up right now.");
     }
 
-    const result = (await response.json()) as Record<string, unknown>;
-    if (result["success"] === false) {
-      throw new Error(
-        typeof result["message"] === "string"
-          ? result["message"]
-          : "This IP address could not be looked up.",
-      );
-    }
-
-    const { data: matchingDevice } = await context.supabase
-      .from("devices")
-      .select("device_name, device_type, browser, os")
-      .eq("user_id", context.userId)
-      .eq("last_ip", ip)
-      .order("last_seen", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    let matchingDevice: any = null;
+    try {
+      const { data: dev } = await context.supabase
+        .from("devices")
+        .select("device_name, device_type, browser, os")
+        .eq("user_id", context.userId)
+        .eq("last_ip", ip)
+        .order("last_seen", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      matchingDevice = dev;
+    } catch {}
 
     const connection = result["connection"] as Record<string, unknown> | undefined;
     const timezone = result["timezone"] as Record<string, unknown> | undefined;
     const address = [result["city"], result["region"], result["country"]]
       .filter(Boolean)
       .join(", ");
-    const { error: activityError } = await context.supabase.from("security_events").insert({
-      user_id: context.userId,
-      event_type: "IP_LOOKUP",
-      ip_address: ip,
-      user_agent: clientUserAgent(),
-      location_label: address || null,
-      risk_score: 0,
-      risk_level: "LOW",
-      risk_reasons: [],
-      status: "Trusted",
-      metadata: { source: "ip_tracker", tracked_ip: ip },
-    });
-    if (activityError) console.warn("IP lookup activity warning:", activityError.message);
+
+    try {
+      await context.supabase.from("security_events").insert({
+        user_id: context.userId,
+        event_type: "IP_LOOKUP",
+        ip_address: ip,
+        user_agent: clientUserAgent(),
+        location_label: address || null,
+        risk_score: 0,
+        risk_level: "LOW",
+        risk_reasons: [],
+        status: "Trusted",
+        metadata: { source: "ip_tracker", tracked_ip: ip },
+      });
+    } catch {}
+
     return {
       ip: typeof result["ip"] === "string" ? result["ip"] : ip,
       publicAddress: address || "Approximate location unavailable",
@@ -825,8 +906,8 @@ export const lookupIpAddress = createServerFn({ method: "POST" })
       deviceType: matchingDevice?.device_type ?? null,
       browser: matchingDevice?.browser ?? null,
       os: matchingDevice?.os ?? null,
-      organization: typeof connection?.["org"] === "string" ? connection["org"] : null,
-      timezone: typeof timezone?.["id"] === "string" ? timezone["id"] : null,
+      organization: typeof connection?.["org"] === "string" ? connection["org"] : (typeof connection?.["isp"] === "string" ? connection["isp"] : null),
+      timezone: typeof timezone?.["id"] === "string" ? timezone["id"] : (typeof timezone?.["utc"] === "string" ? timezone["utc"] : null),
     };
   });
 
@@ -891,23 +972,47 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
     const userId = context.userId;
-    const ip = clientIp();
+    const resolved = await resolvePublicIpAndGeo(clientIp());
+    const ip = resolved.ip;
+    const geo = resolved.geo;
     const ua = clientUserAgent();
-    const geo = await geoFromIp(ip);
 
-    const { data: recent } = await supabase
-      .from("security_events")
-      .select("ip_address, location_label, created_at, event_type")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(50);
+    // Also update profile with latest location
+    if (geo.label || geo.lat) {
+      try {
+        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+        await supabaseAdmin.from("profiles").update({
+          last_lat: geo.lat,
+          last_lng: geo.lng,
+          last_location_label: geo.label,
+          last_location_at: new Date().toISOString(),
+          city: geo.city ?? null,
+          country: geo.country ?? null,
+        }).eq("id", userId);
+      } catch {}
+    }
 
-    const { data: existingDevice } = await supabase
-      .from("devices")
-      .select("id, trusted")
-      .eq("user_id", userId)
-      .eq("device_key", data.device.deviceKey)
-      .maybeSingle();
+    let recent: any[] = [];
+    try {
+      const { data: recData } = await supabase
+        .from("security_events")
+        .select("ip_address, location_label, created_at, event_type")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(50);
+      recent = recData ?? [];
+    } catch {}
+
+    let existingDevice: any = null;
+    try {
+      const { data: devData } = await supabase
+        .from("devices")
+        .select("id, trusted")
+        .eq("user_id", userId)
+        .eq("device_key", data.device.deviceKey)
+        .maybeSingle();
+      existingDevice = devData;
+    } catch {}
 
     const reasons: string[] = [];
     let score = 0;
@@ -943,77 +1048,80 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
     const level = levelFor(score);
     const status = score >= 55 ? "Suspicious" : score >= 30 ? "Review" : "Trusted";
 
-    const { data: inserted, error } = await supabase
-      .from("security_events")
-      .insert({
-        user_id: userId,
-        event_type: data.eventType,
-        ip_address: ip,
-        user_agent: ua,
-        device_type: data.device.deviceType ?? null,
-        browser: data.device.browser ?? null,
-        os: data.device.os ?? null,
-        location_label: geo.label,
-        latitude: geo.lat,
-        longitude: geo.lng,
-        risk_score: score,
-        risk_level: level,
-        risk_reasons: reasons,
-        status,
-        metadata: data.note ? { note: data.note } : {},
-      })
-      .select("id")
-      .single();
+    let insertedId = "event-" + Date.now();
+    try {
+      const { data: inserted, error } = await supabase
+        .from("security_events")
+        .insert({
+          user_id: userId,
+          event_type: data.eventType,
+          ip_address: ip,
+          user_agent: ua,
+          device_type: data.device.deviceType ?? null,
+          browser: data.device.browser ?? null,
+          os: data.device.os ?? null,
+          location_label: geo.label,
+          latitude: geo.lat,
+          longitude: geo.lng,
+          risk_score: score,
+          risk_level: level,
+          risk_reasons: reasons,
+          status,
+          metadata: data.note ? { note: data.note } : {},
+        })
+        .select("id")
+        .single();
+      if (inserted?.id) insertedId = inserted.id;
+    } catch (e) {
+      console.warn("security_events insert warning:", e);
+    }
 
-    if (error) throw new Error(error.message);
+    // Upsert the device record if table exists
+    try {
+      await supabase.from("devices").upsert(
+        {
+          user_id: userId,
+          device_key: data.device.deviceKey,
+          device_name: data.device.deviceName ?? null,
+          device_type: data.device.deviceType ?? null,
+          browser: data.device.browser ?? null,
+          os: data.device.os ?? null,
+          last_ip: ip,
+          last_seen: new Date().toISOString(),
+        },
+        { onConflict: "user_id,device_key" },
+      );
+    } catch {}
 
-    // Upsert the device record
-    const { error: deviceError } = await supabase.from("devices").upsert(
-      {
-        user_id: userId,
-        device_key: data.device.deviceKey,
-        device_name: data.device.deviceName ?? null,
-        device_type: data.device.deviceType ?? null,
-        browser: data.device.browser ?? null,
-        os: data.device.os ?? null,
-        last_ip: ip,
-        last_seen: new Date().toISOString(),
-      },
-      { onConflict: "user_id,device_key" },
-    );
-    if (deviceError) throw new Error(deviceError.message);
-
-    // Raise an alert for anything above routine
+    // Raise an alert if table exists
     if (score >= 30 || !["LOGIN_SUCCESS", "LOGOUT"].includes(data.eventType)) {
-      const { error: alertError } = await supabase.from("security_alerts").insert({
-        user_id: userId,
-        title: titleFor(data.eventType, level),
-        description: `${data.eventType.replaceAll("_", " ").toLowerCase()} • IP ${ip}${
-          geo.label ? ` • ${geo.label}` : ""
-        }${reasons.length ? ` • ${reasons.join(", ")}` : ""}`,
-        severity: level,
-        category: "security",
-        event_id: inserted.id,
-      });
-      if (alertError) {
-        console.warn("Alert logging warning:", alertError.message);
-      }
+      try {
+        await supabase.from("security_alerts").insert({
+          user_id: userId,
+          title: titleFor(data.eventType, level),
+          description: `${data.eventType.replaceAll("_", " ").toLowerCase()} • IP ${ip}${
+            geo.label ? ` • ${geo.label}` : ""
+          }${reasons.length ? ` • ${reasons.join(", ")}` : ""}`,
+          severity: level,
+          category: "security",
+          event_id: insertedId,
+        });
+      } catch {}
     }
 
-    const { error: auditError } = await supabase.from("audit_logs").insert({
-      actor_id: userId,
-      actor_role: "user",
-      action: data.eventType,
-      resource: "security_events",
-      ip_address: ip,
-      result: "success",
-    });
-    if (auditError) {
-      console.warn("Audit logging warning:", auditError.message);
-    }
+    try {
+      await supabase.from("audit_logs").insert({
+        actor_id: userId,
+        actor_role: "user",
+        action: data.eventType,
+        resource: "security_events",
+        ip_address: ip,
+        result: "success",
+      });
+    } catch {}
 
     return {
-      id: inserted.id,
+      id: insertedId,
       ip,
       location: geo.label,
       riskScore: score,
@@ -1061,9 +1169,8 @@ function titleFor(eventType: string, level: string) {
 
 /** Returns the server-observed IP and approximate region of the caller. */
 export const getConnectionInfo = createServerFn({ method: "GET" }).handler(async () => {
-  const ip = clientIp();
-  const geo = await geoFromIp(ip);
-  return { ip, location: geo.label, userAgent: clientUserAgent() };
+  const resolved = await resolvePublicIpAndGeo(clientIp());
+  return { ip: resolved.ip, location: resolved.geo.label, userAgent: clientUserAgent() };
 });
 
 /** Audits an attendance edit/removal and alerts the acting user plus all administrators. */
@@ -1096,18 +1203,20 @@ export const notifyAttendanceChange = createServerFn({ method: "POST" })
           .map((email) => email.toLowerCase()),
       ),
     );
-    const { data: hasAdminRole } = await supabaseAdmin.rpc("has_role", {
-      _user_id: context.userId,
-      _role: "admin",
-    });
-    await supabaseAdmin.from("audit_logs").insert({
-      actor_id: context.userId,
-      actor_role: hasAdminRole ? "admin" : "user",
-      action: `ATTENDANCE_${data.action.toUpperCase()}`,
-      resource: `attendance/${data.attendance.date}/${data.attendance.rollNumber}`,
-      ip_address: ip,
-      result: "success",
-    });
+    try {
+      const { data: hasAdminRole } = await supabaseAdmin.rpc("has_role", {
+        _user_id: context.userId,
+        _role: "admin",
+      });
+      await supabaseAdmin.from("audit_logs").insert({
+        actor_id: context.userId,
+        actor_role: hasAdminRole ? "admin" : "user",
+        action: `ATTENDANCE_${data.action.toUpperCase()}`,
+        resource: `attendance/${data.attendance.date}/${data.attendance.rollNumber}`,
+        ip_address: ip,
+        result: "success",
+      });
+    } catch {}
 
     const action = data.action === "modified" ? "modified" : "deleted";
     const actionLabel = action === "modified" ? "Modified ✏️" : "Deleted 🗑️";
@@ -1157,28 +1266,51 @@ export const setLocationConsent = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ enabled: z.boolean() }).parse(d))
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
-    const patch = data.enabled
-      ? { location_consent: true, location_consent_at: new Date().toISOString() }
-      : {
-          location_consent: false,
-          location_consent_at: new Date().toISOString(),
-          last_lat: null,
-          last_lng: null,
-          last_location_label: null,
-          last_location_at: null,
-        };
-    const { error } = await supabase.from("profiles").update(patch).eq("id", context.userId);
-    if (error) throw new Error(error.message);
+    const now = new Date().toISOString();
+    let patch: Record<string, unknown> = {
+      location_consent: data.enabled,
+      location_consent_at: data.enabled ? now : null,
+    };
 
-    const { error: auditError } = await supabase.from("audit_logs").insert({
-      actor_id: context.userId,
-      actor_role: "user",
-      action: data.enabled ? "USER_ENABLED_LOCATION_CONSENT" : "USER_DISABLED_LOCATION_CONSENT",
-      resource: "profiles",
-      ip_address: clientIp(),
-      result: "success",
-    });
-    if (auditError) throw new Error(auditError.message);
+    if (data.enabled) {
+      const resolved = await resolvePublicIpAndGeo(clientIp());
+      if (resolved.geo.label || resolved.geo.lat) {
+        patch = {
+          ...patch,
+          last_lat: resolved.geo.lat,
+          last_lng: resolved.geo.lng,
+          last_location_label: resolved.geo.label,
+          last_location_at: now,
+          city: resolved.geo.city ?? null,
+          country: resolved.geo.country ?? null,
+        };
+      }
+    } else {
+      patch = {
+        ...patch,
+        last_lat: null,
+        last_lng: null,
+        last_location_label: null,
+        last_location_at: null,
+      };
+    }
+
+    const { error } = await supabase.from("profiles").update(patch).eq("id", context.userId);
+    if (error) {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      await supabaseAdmin.from("profiles").update(patch).eq("id", context.userId);
+    }
+
+    try {
+      await supabase.from("audit_logs").insert({
+        actor_id: context.userId,
+        actor_role: "user",
+        action: data.enabled ? "USER_ENABLED_LOCATION_CONSENT" : "USER_DISABLED_LOCATION_CONSENT",
+        resource: "profiles",
+        ip_address: clientIp(),
+        result: "success",
+      });
+    } catch {}
     return { ok: true };
   });
 

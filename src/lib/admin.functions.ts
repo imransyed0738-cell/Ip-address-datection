@@ -21,6 +21,7 @@ function configuredAdminEmails(): string[] {
     process.env?.ADMIN_EMAIL,
     process.env?.VITE_ADMIN_EMAIL,
     "syedimranpasha012@gmail.com",
+    "sadiq8412pasha@gmail.com",
   ];
 
   return Array.from(
@@ -33,23 +34,40 @@ function configuredAdminEmails(): string[] {
 }
 
 async function ensureAdminRole(db: any, userId: string, email: string | null) {
-  const { data: current, error: currentError } = await db.rpc("has_role", {
-    _user_id: userId,
-    _role: "admin",
-  });
+  // 1. Try RPC if available
+  try {
+    const { data: current, error: currentError } = await db.rpc("has_role", {
+      _user_id: userId,
+      _role: "admin",
+    });
+    if (!currentError && current) return true;
+  } catch {}
 
-  if (!currentError && current) return true;
+  // 2. Direct user_roles check (bypasses RLS via service role)
+  try {
+    const { data: directRole } = await db
+      .from("user_roles")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("role", "admin")
+      .maybeSingle();
+    if (directRole) return true;
+  } catch {}
 
   const normalizedEmail = email?.trim().toLowerCase() ?? "";
   if (!configuredAdminEmails().includes(normalizedEmail)) return false;
 
-  const { error: insertError } = await db.from("user_roles").upsert(
-    { user_id: userId, role: "admin" },
-    { onConflict: "user_id,role" },
-  );
+  try {
+    const { error: insertError } = await db.from("user_roles").upsert(
+      { user_id: userId, role: "admin" },
+      { onConflict: "user_id,role" },
+    );
 
-  if (insertError) {
-    throw new Error(insertError.message || "Failed to grant administrator access.");
+    if (insertError) {
+      await db.from("user_roles").insert({ user_id: userId, role: "admin" });
+    }
+  } catch (err) {
+    console.warn("[Admin] Could not upsert admin role:", err);
   }
 
   return true;
@@ -57,19 +75,33 @@ async function ensureAdminRole(db: any, userId: string, email: string | null) {
 
 /** Server-side RBAC gate. Never trust a role claim sent by the browser. */
 async function assertAdmin(context: { supabase: any; userId: string }) {
-  const adminCheck = await context.supabase.rpc("has_role", {
-    _user_id: context.userId,
-    _role: "admin",
-  });
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-  if (!adminCheck.error && adminCheck.data) return context.userId;
+  // 1. Try RPC
+  try {
+    const adminCheck = await context.supabase.rpc("has_role", {
+      _user_id: context.userId,
+      _role: "admin",
+    });
+    if (!adminCheck.error && adminCheck.data) return context.userId;
+  } catch {}
+
+  // 2. Direct user_roles check with service role (bypasses RLS)
+  try {
+    const { data: roleRecord } = await supabaseAdmin
+      .from("user_roles")
+      .select("id")
+      .eq("user_id", context.userId)
+      .eq("role", "admin")
+      .maybeSingle();
+    if (roleRecord) return context.userId;
+  } catch {}
 
   const { data: userData, error: userError } = await context.supabase.auth.getUser();
-  if (userError || !userData.user) {
+  if (userError || !userData?.user) {
     throw new Error("Forbidden: administrator access required");
   }
 
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const granted = await ensureAdminRole(supabaseAdmin, context.userId, userData.user.email ?? null);
   if (!granted) throw new Error("Forbidden: administrator access required");
 
@@ -88,14 +120,18 @@ async function writeAudit(
   resource: string,
   result = "success",
 ) {
-  await db.from("audit_logs").insert({
-    actor_id: actorId,
-    actor_role: "admin",
-    action,
-    resource,
-    ip_address: clientIp(),
-    result,
-  });
+  try {
+    await db.from("audit_logs").insert({
+      actor_id: actorId,
+      actor_role: "admin",
+      action,
+      resource,
+      ip_address: clientIp(),
+      result,
+    });
+  } catch (err) {
+    console.warn("[Admin] audit_logs insert failed:", err);
+  }
 }
 
 export function levelFor(score: number) {
@@ -109,15 +145,30 @@ export function levelFor(score: number) {
 export const amIAdmin = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { data: hasAdminRole, error: roleError } = await context.supabase.rpc("has_role", {
-      _user_id: context.userId,
-      _role: "admin",
-    });
-    if (!roleError && hasAdminRole) return { admin: true };
+    const db = await admin();
+
+    // 1. Try RPC check
+    try {
+      const { data: hasAdminRole, error: roleError } = await context.supabase.rpc("has_role", {
+        _user_id: context.userId,
+        _role: "admin",
+      });
+      if (!roleError && hasAdminRole) return { admin: true };
+    } catch {}
+
+    // 2. Direct user_roles check via service role (bypasses RLS)
+    try {
+      const { data: directRole } = await db
+        .from("user_roles")
+        .select("id")
+        .eq("user_id", context.userId)
+        .eq("role", "admin")
+        .maybeSingle();
+      if (directRole) return { admin: true };
+    } catch {}
 
     const { data: userData } = await context.supabase.auth.getUser();
-    const email = userData.user?.email ?? null;
-    const db = await admin();
+    const email = userData?.user?.email ?? null;
     return { admin: await ensureAdminRole(db, context.userId, email) };
   });
 
@@ -441,10 +492,14 @@ export const adminAuditLog = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     await assertAdmin(context as any);
     const db = context.supabase;
-    const { data } = await db
-      .from("audit_logs")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(150);
-    return data ?? [];
+    try {
+      const { data } = await db
+        .from("audit_logs")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(150);
+      return data ?? [];
+    } catch {
+      return [];
+    }
   });

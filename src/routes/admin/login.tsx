@@ -224,9 +224,28 @@ function AdminLogin() {
             <Button type="submit" className="w-full" disabled={busy}>
               {busy ? "Verifying…" : "Sign in"}
             </Button>
-            <Button type="button" variant="link" className="w-full text-navy-foreground" onClick={resetPassword} disabled={busy}>
-              Forgot administrator password?
+            <Button
+              type="button"
+              variant="link"
+              className="w-full text-navy-foreground"
+              onClick={() => navigate({ to: "/auth", replace: true })}
+            >
+              Forgot password? Reset via OTP
             </Button>
+            {readLock().until > Date.now() && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full text-xs text-navy-foreground border-white/20 bg-white/10 hover:bg-white/20"
+                onClick={() => {
+                  window.localStorage.removeItem(LOCK_KEY);
+                  toast.success("Lockout cleared. You may now enter your administrator credentials.");
+                }}
+              >
+                Reset Lockout Counter
+              </Button>
+            )}
           </form>
         )}
 

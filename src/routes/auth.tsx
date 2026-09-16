@@ -567,12 +567,12 @@ function AuthPage() {
     }
 
     toast.success("Password updated successfully! 🎉", {
-      description: "You can now sign in with your new password.",
+      description: "Welcome back! You are now signed in.",
     });
     setIsResetPasswordMode(false);
     window.location.hash = "";
-    await supabase.auth.signOut();
-    navigate({ to: "/auth", replace: true });
+    await afterSignIn();
+    navigate({ to: "/user/dashboard", replace: true });
   }
 
   if (isResetPasswordMode) {

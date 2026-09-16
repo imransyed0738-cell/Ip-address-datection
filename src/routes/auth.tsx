@@ -78,6 +78,7 @@ function AuthPage() {
   const [resendIn, setResendIn] = useState(0);
   const [otpResendIn, setOtpResendIn] = useState(0);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [isResetPasswordMode, setIsResetPasswordMode] = useState(false);
 
   // Registration OTP flow
   const [pendingRegisterData, setPendingRegisterData] = useState<PendingRegisterData | null>(null);
@@ -116,9 +117,30 @@ function AuthPage() {
   }, []);
 
   useEffect(() => {
-    void supabase.auth.getSession().then(({ data }) => {
-      if (data.session) void supabase.auth.signOut();
+    const hash = window.location.hash || "";
+    const isRecovery =
+      hash.includes("type=recovery") ||
+      new URLSearchParams(window.location.search).get("type") === "recovery";
+
+    if (isRecovery) {
+      setIsResetPasswordMode(true);
+    }
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setIsResetPasswordMode(true);
+      }
     });
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (data.session && !isRecovery) {
+        void supabase.auth.signOut();
+      }
+    });
+
+    return () => {
+      authListener?.subscription.unsubscribe();
+    };
   }, []);
 
   async function continueAfterPassword() {
@@ -518,6 +540,91 @@ function AuthPage() {
       });
       return;
     }
+  }
+
+  async function handleUpdatePassword(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const newPassword = String(form.get("newPassword") ?? "");
+    const confirmPassword = String(form.get("confirmPassword") ?? "");
+
+    if (newPassword.length < 8) {
+      toast.error("Password must be at least 8 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast.error("Passwords do not match.");
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    setBusy(false);
+
+    if (error) {
+      toast.error("Could not update password", { description: error.message });
+      return;
+    }
+
+    toast.success("Password updated successfully! 🎉", {
+      description: "You can now sign in with your new password.",
+    });
+    setIsResetPasswordMode(false);
+    window.location.hash = "";
+    await supabase.auth.signOut();
+    navigate({ to: "/auth", replace: true });
+  }
+
+  if (isResetPasswordMode) {
+    return (
+      <Screen>
+        <form onSubmit={handleUpdatePassword} className="space-y-4">
+          <div className="text-center">
+            <h1 className="text-xl font-semibold">Set New Password</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Enter your new account password below.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="new-password">New Password</Label>
+            <Input
+              id="new-password"
+              name="newPassword"
+              type="password"
+              autoComplete="new-password"
+              placeholder="Minimum 8 characters"
+              required
+              autoFocus
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="confirm-new-password">Confirm Password</Label>
+            <Input
+              id="confirm-new-password"
+              name="confirmPassword"
+              type="password"
+              autoComplete="new-password"
+              placeholder="Re-enter new password"
+              required
+            />
+          </div>
+          <Button type="submit" className="w-full" disabled={busy}>
+            {busy ? "Updating…" : "Update Password"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full"
+            onClick={() => {
+              setIsResetPasswordMode(false);
+              window.location.hash = "";
+            }}
+          >
+            Back to sign in
+          </Button>
+        </form>
+      </Screen>
+    );
   }
 
   if (forgotMode) {

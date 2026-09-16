@@ -152,34 +152,21 @@ function Dashboard() {
         if (!auth?.user || !active) return;
         const info = getDeviceInfo();
 
-        const { data: existingDevice } = await supabase
-          .from("devices")
-          .select("id")
-          .eq("user_id", auth.user.id)
-          .eq("device_key", info.deviceKey)
-          .maybeSingle();
-
-        const { data: existingEvents } = await supabase
-          .from("security_events")
-          .select("id")
-          .eq("user_id", auth.user.id)
-          .limit(1);
-
-        if ((!existingDevice || !existingEvents?.length) && active) {
-          await eventFn({
-            data: {
-              eventType: existingDevice ? "LOGIN_SUCCESS" : "NEW_DEVICE",
-              device: info,
-              note: "Active session monitoring",
-            },
-          });
-        }
+        await eventFn({
+          data: {
+            eventType: "LOGIN_SUCCESS",
+            device: info,
+            note: "Active dashboard session",
+          },
+        }).catch((err) => console.warn("[Security] Event record warning:", err));
 
         if (active) {
           await Promise.all([
+            queryClient.refetchQueries({ queryKey: ["profile"] }),
             queryClient.refetchQueries({ queryKey: ["devices"] }),
             queryClient.refetchQueries({ queryKey: ["security_events"] }),
             queryClient.refetchQueries({ queryKey: ["security_alerts"] }),
+            queryClient.refetchQueries({ queryKey: ["conn"] }),
           ]);
         }
       } catch (err) {

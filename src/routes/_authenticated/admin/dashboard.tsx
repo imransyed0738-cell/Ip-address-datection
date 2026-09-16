@@ -47,7 +47,11 @@ function AdminDashboard() {
   const lookupFn = useServerFn(lookupIpAddress);
   const realtimeStatus = useAdminRealtime();
   const [ipToTrack, setIpToTrack] = useState("");
-  const { data, isLoading } = useQuery({ queryKey: ["admin", "overview"], queryFn: () => load() });
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin", "overview"],
+    queryFn: () => load(),
+    refetchInterval: 5000,
+  });
   const ipLookup = useMutation({
     mutationFn: (ip: string) => lookupFn({ data: { ip } }),
     onError: (error: Error) => toast.error("IP lookup failed", { description: error.message }),
@@ -241,16 +245,25 @@ function AdminDashboard() {
                   </td>
                   <td className="px-3 py-2 text-xs">{e.status ?? "—"}</td>
                   <td className="px-3 py-2">
-                    {e.user_id ? (
+                    {e.user ? (
                       <Link
                         to="/admin/users/$id"
                         params={{ id: e.user_id }}
                         className="text-primary underline-offset-2 hover:underline"
                       >
+                        <div className="font-medium text-xs">{e.user.full_name ?? "User"}</div>
+                        <div className="text-[11px] text-muted-foreground">{e.user.email}</div>
+                      </Link>
+                    ) : e.user_id ? (
+                      <Link
+                        to="/admin/users/$id"
+                        params={{ id: e.user_id }}
+                        className="text-primary underline-offset-2 hover:underline text-xs"
+                      >
                         Investigate
                       </Link>
                     ) : (
-                      "—"
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </td>
                 </tr>

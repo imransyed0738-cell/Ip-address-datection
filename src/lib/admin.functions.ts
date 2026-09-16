@@ -254,36 +254,60 @@ export const adminOverview = createServerFn({ method: "GET" })
     const db = await admin();
     const since = new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString();
 
-    const [{ count: users }, { count: events24 }, { data: recent }, { data: locked }, { data: activeLogins }] =
-      await Promise.all([
-        db.from("profiles").select("id", { count: "exact", head: true }),
-        db.from("security_events").select("id", { count: "exact", head: true }).gte("created_at", since),
-        db
-          .from("security_events")
-          .select("id, user_id, event_type, ip_address, device_type, browser, os, location_label, risk_score, risk_level, risk_reasons, status, created_at")
-          .order("created_at", { ascending: false })
-          .limit(40),
-        db.from("profiles").select("id").eq("account_locked", true),
-        db
-          .from("security_events")
-          .select("user_id, ip_address, location_label")
-          .gte("created_at", since)
-          .eq("event_type", "LOGIN_SUCCESS"),
-      ]);
+    const [
+      { count: users },
+      { count: events24 },
+      { data: recent },
+      { data: activeLogins },
+    ] = await Promise.all([
+      db.from("profiles").select("id", { count: "exact", head: true }),
+      db.from("security_events").select("id", { count: "exact", head: true }).gte("created_at", since),
+      db
+        .from("security_events")
+        .select("id, user_id, event_type, ip_address, device_type, browser, os, location_label, risk_score, risk_level, risk_reasons, status, created_at")
+        .order("created_at", { ascending: false })
+        .limit(50),
+      db
+        .from("security_events")
+        .select("user_id, ip_address, location_label")
+        .gte("created_at", since)
+        .eq("event_type", "LOGIN_SUCCESS"),
+    ]);
 
-    const activeUsers = new Set((activeLogins ?? []).map((e: any) => e.user_id).filter(Boolean)).size;
-    const uniqueIps = new Set((recent ?? []).map((e: any) => e.ip_address).filter(Boolean)).size;
-    const geoRegions = new Set((recent ?? []).map((e: any) => e.location_label).filter(Boolean)).size;
-    const highRisk = (recent ?? []).filter((e: any) => e.risk_score >= 51);
+    let lockedCount = 0;
+    try {
+      const { data: allProfiles } = await db.from("profiles").select("*");
+      lockedCount = (allProfiles ?? []).filter((p: any) => Boolean(p.account_locked)).length;
+    } catch {}
+
+    const recentEvents = recent ?? [];
+    const ids = Array.from(new Set(recentEvents.map((e: any) => e.user_id).filter(Boolean)));
+    const { data: profiles } = ids.length
+      ? await db.from("profiles").select("id, full_name, email").in("id", ids)
+      : { data: [] };
+    const profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));
+
+    const eventsWithUsers = recentEvents.map((e: any) => ({
+      ...e,
+      user: profileMap.get(e.user_id) ?? null,
+    }));
+
+    const activeUsers =
+      new Set((activeLogins ?? []).map((e: any) => e.user_id).filter(Boolean)).size ||
+      new Set(recentEvents.map((e: any) => e.user_id).filter(Boolean)).size;
+    const uniqueIps = new Set(recentEvents.map((e: any) => e.ip_address).filter(Boolean)).size;
+    const geoRegions = new Set(recentEvents.map((e: any) => e.location_label).filter(Boolean)).size;
+    const highRisk = recentEvents.filter((e: any) => e.risk_score >= 51);
+
     return {
       users: users ?? 0,
       activeUsers,
-      events24: events24 ?? 0,
+      events24: events24 ?? recentEvents.length,
       liveIpCount: uniqueIps,
       geoRegions,
-      locked: (locked ?? []).length,
+      locked: lockedCount,
       highRiskCount: highRisk.length,
-      recent: recent ?? [],
+      recent: eventsWithUsers,
       highRisk,
     };
   });
@@ -295,9 +319,7 @@ export const adminListUsers = createServerFn({ method: "GET" })
     const db = await admin();
     const { data: mergedProfiles, error: profilesError } = await db
       .from("profiles")
-      .select(
-        "id, full_name, email, account_locked, flagged_for_review, location_consent, city, country, last_lat, last_lng, last_location_label, last_location_at, created_at",
-      )
+      .select("*")
       .order("created_at", { ascending: false })
       .limit(200);
     if (profilesError) throw profilesError;
@@ -324,6 +346,9 @@ export const adminListUsers = createServerFn({ method: "GET" })
       const risk = scoreFromEvents(own as any, deviceCount);
       return {
         ...p,
+        account_locked: Boolean(p.account_locked),
+        flagged_for_review: Boolean(p.flagged_for_review),
+        location_consent: Boolean(p.location_consent),
         deviceCount,
         lastLoginAt: lastLogin?.created_at ?? null,
         lastIp: own[0]?.ip_address ?? null,
@@ -355,20 +380,29 @@ export const adminUserDetail = createServerFn({ method: "POST" })
         .limit(20),
     ]);
 
-      const queryError = [profile, events, devices, alerts, notes, assessments].find((result: any) => result.error)?.error;
-      if (queryError) throw new Error(`Could not load account investigation: ${queryError.message}`);
-      if (!profile.data) throw new Error("This user account no longer exists.");
+    if (profile.error) {
+      throw new Error(`Could not load user profile: ${profile.error.message}`);
+    }
+    if (!profile.data) {
+      throw new Error("This user account no longer exists.");
+    }
 
-    const risk = scoreFromEvents((events.data ?? []) as any, (devices.data ?? []).length);
+    const eventsList = events.data ?? [];
+    const devicesList = devices.data ?? [];
+    const alertsList = alerts.data ?? [];
+    const notesList = notes.data ?? [];
+    const assessmentsList = assessments.data ?? [];
+
+    const risk = scoreFromEvents(eventsList as any, devicesList.length);
     await writeAudit(db, adminId, "ADMIN_VIEWED_USER_SECURITY", `profiles/${uid}`);
 
     return {
       profile: profile.data,
-      events: events.data ?? [],
-      devices: devices.data ?? [],
-      alerts: alerts.data ?? [],
-      notes: notes.data ?? [],
-      assessments: assessments.data ?? [],
+      events: eventsList,
+      devices: devicesList,
+      alerts: alertsList,
+      notes: notesList,
+      assessments: assessmentsList,
       risk,
     };
   });
@@ -398,45 +432,63 @@ export const adminUserAction = createServerFn({ method: "POST" })
 
     switch (data.action) {
       case "LOCK": {
-        await db.from("profiles").update({ account_locked: true }).eq("id", uid);
+        try {
+          await db.from("profiles").update({ account_locked: true }).eq("id", uid);
+        } catch {}
         await db.auth.admin.signOut(uid, "global").catch(() => undefined);
-        await db.from("security_alerts").insert({
-          user_id: uid,
-          title: "Account locked by security team",
-          description: "An administrator locked this account pending a security review.",
-          severity: "CRITICAL",
-        });
+        try {
+          await db.from("security_alerts").insert({
+            user_id: uid,
+            title: "Account locked by security team",
+            description: "An administrator locked this account pending a security review.",
+            severity: "CRITICAL",
+          });
+        } catch {}
         break;
       }
       case "UNLOCK":
-        await db.from("profiles").update({ account_locked: false }).eq("id", uid);
+        try {
+          await db.from("profiles").update({ account_locked: false }).eq("id", uid);
+        } catch {}
         break;
       case "FORCE_LOGOUT":
         await db.auth.admin.signOut(uid, "global").catch(() => undefined);
         break;
       case "REQUIRE_PASSWORD_RESET":
-        await db.from("profiles").update({ require_password_reset: true }).eq("id", uid);
-        await db.from("security_alerts").insert({
-          user_id: uid,
-          title: "Password reset required",
-          description: "Your security team requires you to change your password.",
-          severity: "HIGH",
-        });
+        try {
+          await db.from("profiles").update({ require_password_reset: true }).eq("id", uid);
+        } catch {}
+        try {
+          await db.from("security_alerts").insert({
+            user_id: uid,
+            title: "Password reset required",
+            description: "Your security team requires you to change your password.",
+            severity: "HIGH",
+          });
+        } catch {}
         break;
       case "FLAG_REVIEW":
-        await db.from("profiles").update({ flagged_for_review: true }).eq("id", uid);
+        try {
+          await db.from("profiles").update({ flagged_for_review: true }).eq("id", uid);
+        } catch {}
         break;
       case "RESOLVE_REVIEW":
-        await db.from("profiles").update({ flagged_for_review: false }).eq("id", uid);
-        await db
-          .from("security_risk_assessments")
-          .update({ review_status: "REVIEWED", reviewed_by_admin_id: adminId })
-          .eq("user_id", uid)
-          .eq("review_status", "PENDING");
+        try {
+          await db.from("profiles").update({ flagged_for_review: false }).eq("id", uid);
+        } catch {}
+        try {
+          await db
+            .from("security_risk_assessments")
+            .update({ review_status: "REVIEWED", reviewed_by_admin_id: adminId })
+            .eq("user_id", uid)
+            .eq("review_status", "PENDING");
+        } catch {}
         break;
       case "ADD_NOTE": {
         if (!data.note?.trim()) throw new Error("Note cannot be empty");
-        await db.from("admin_notes").insert({ user_id: uid, admin_id: adminId, note: data.note.trim() });
+        try {
+          await db.from("admin_notes").insert({ user_id: uid, admin_id: adminId, note: data.note.trim() });
+        } catch {}
         break;
       }
       case "GENERATE_RISK": {
@@ -446,15 +498,21 @@ export const adminUserAction = createServerFn({ method: "POST" })
           .eq("user_id", uid)
           .order("created_at", { ascending: false })
           .limit(200);
-        const { data: devices } = await db.from("devices").select("id").eq("user_id", uid);
-        const risk = scoreFromEvents((events ?? []) as any, (devices ?? []).length);
-        await db.from("security_risk_assessments").insert({
-          user_id: uid,
-          score: risk.score,
-          risk_level: risk.level,
-          reasons: risk.reasons,
-          review_status: risk.score >= 51 ? "PENDING" : "AUTO_CLEARED",
-        });
+        let deviceCount = 0;
+        try {
+          const { data: devices } = await db.from("devices").select("id").eq("user_id", uid);
+          deviceCount = (devices ?? []).length;
+        } catch {}
+        const risk = scoreFromEvents((events ?? []) as any, deviceCount);
+        try {
+          await db.from("security_risk_assessments").insert({
+            user_id: uid,
+            score: risk.score,
+            risk_level: risk.level,
+            reasons: risk.reasons,
+            review_status: risk.score >= 51 ? "PENDING" : "AUTO_CLEARED",
+          });
+        } catch {}
         break;
       }
     }

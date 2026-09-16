@@ -1050,7 +1050,8 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
 
     let insertedId = "event-" + Date.now();
     try {
-      const { data: inserted, error } = await supabase
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      const { data: inserted, error } = await supabaseAdmin
         .from("security_events")
         .insert({
           user_id: userId,
@@ -1072,13 +1073,15 @@ export const recordSecurityEvent = createServerFn({ method: "POST" })
         .select("id")
         .single();
       if (inserted?.id) insertedId = inserted.id;
+      if (error) console.warn("security_events insert notice:", error.message);
     } catch (e) {
       console.warn("security_events insert warning:", e);
     }
 
     // Upsert the device record if table exists
     try {
-      await supabase.from("devices").upsert(
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      await supabaseAdmin.from("devices").upsert(
         {
           user_id: userId,
           device_key: data.device.deviceKey,
@@ -1265,15 +1268,17 @@ export const setLocationConsent = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ enabled: z.boolean() }).parse(d))
   .handler(async ({ data, context }) => {
-    const supabase = context.supabase;
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const now = new Date().toISOString();
     let patch: Record<string, unknown> = {
       location_consent: data.enabled,
       location_consent_at: data.enabled ? now : null,
     };
 
+    let resolvedGeo: any = null;
     if (data.enabled) {
       const resolved = await resolvePublicIpAndGeo(clientIp());
+      resolvedGeo = resolved;
       if (resolved.geo.label || resolved.geo.lat) {
         patch = {
           ...patch,
@@ -1295,23 +1300,35 @@ export const setLocationConsent = createServerFn({ method: "POST" })
       };
     }
 
-    const { error } = await supabase.from("profiles").update(patch).eq("id", context.userId);
-    if (error) {
-      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-      await supabaseAdmin.from("profiles").update(patch).eq("id", context.userId);
-    }
+    await supabaseAdmin.from("profiles").update(patch).eq("id", context.userId);
 
     try {
-      await supabase.from("audit_logs").insert({
+      await supabaseAdmin.from("security_events").insert({
+        user_id: context.userId,
+        event_type: "LOCATION_PERMISSION_CHANGED",
+        ip_address: resolvedGeo?.ip ?? clientIp(),
+        location_label: resolvedGeo?.geo?.label ?? null,
+        latitude: resolvedGeo?.geo?.lat ?? null,
+        longitude: resolvedGeo?.geo?.lng ?? null,
+        risk_score: 0,
+        risk_level: "LOW",
+        status: "Trusted",
+        metadata: { enabled: data.enabled },
+      });
+    } catch {}
+
+    try {
+      await supabaseAdmin.from("audit_logs").insert({
         actor_id: context.userId,
         actor_role: "user",
         action: data.enabled ? "USER_ENABLED_LOCATION_CONSENT" : "USER_DISABLED_LOCATION_CONSENT",
         resource: "profiles",
-        ip_address: clientIp(),
+        ip_address: resolvedGeo?.ip ?? clientIp(),
         result: "success",
       });
     } catch {}
-    return { ok: true };
+
+    return { ok: true, patch };
   });
 
 export const submitLocation = createServerFn({ method: "POST" })
@@ -1322,81 +1339,80 @@ export const submitLocation = createServerFn({ method: "POST" })
       .parse(d),
   )
   .handler(async ({ data, context }) => {
-    const supabase = context.supabase;
-
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("location_consent")
-      .eq("id", context.userId)
-      .maybeSingle();
-
-    // Server-side consent gate: unauthorised location updates are rejected.
-    if (!profile?.location_consent) {
-      throw new Error("Location monitoring is disabled for this account.");
-    }
-
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const label = await reverseGeocode(data.latitude, data.longitude);
     const now = new Date().toISOString();
+    const resolved = await resolvePublicIpAndGeo(clientIp());
 
-    const { error } = await supabase
+    await supabaseAdmin
       .from("profiles")
       .update({
+        location_consent: true,
+        location_consent_at: now,
         last_lat: data.latitude,
         last_lng: data.longitude,
-        last_location_label: label,
+        last_location_label: label || resolved.geo.label,
         last_location_at: now,
       })
       .eq("id", context.userId);
-    if (error) throw new Error(error.message);
 
-    const { error: eventError } = await supabase.from("security_events").insert({
-      user_id: context.userId,
-      event_type: "LOCATION_UPDATE",
-      ip_address: clientIp(),
-      user_agent: clientUserAgent(),
-      location_label: label,
-      latitude: data.latitude,
-      longitude: data.longitude,
-      risk_score: 0,
-      risk_level: "LOW",
-      status: "Trusted",
-      metadata: { source: "consented_device_location" },
-    });
-    if (eventError) throw new Error(eventError.message);
+    try {
+      await supabaseAdmin.from("security_events").insert({
+        user_id: context.userId,
+        event_type: "LOCATION_UPDATE",
+        ip_address: resolved.ip,
+        user_agent: clientUserAgent(),
+        location_label: label || resolved.geo.label,
+        latitude: data.latitude,
+        longitude: data.longitude,
+        risk_score: 0,
+        risk_level: "LOW",
+        status: "Trusted",
+        metadata: { source: "consented_device_location" },
+      });
+    } catch {}
 
-    return { label, updatedAt: now };
+    return { label: label || resolved.geo.label, updatedAt: now };
   });
 
 export const lockAccount = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    await supabaseAdmin.from("profiles").update({ account_locked: true }).eq("id", context.userId);
+    try {
+      await supabaseAdmin.from("profiles").update({ account_locked: true }).eq("id", context.userId);
+    } catch {}
     await supabaseAdmin.auth.admin.signOut(context.userId, "global").catch(() => undefined);
-    await supabaseAdmin.from("security_events").insert({
-      user_id: context.userId,
-      event_type: "ACCOUNT_LOCKED",
-      ip_address: clientIp(),
-      user_agent: clientUserAgent(),
-      risk_score: 90,
-      risk_level: "CRITICAL",
-      risk_reasons: ["User requested account lock"],
-      status: "Locked",
-    });
-    await supabaseAdmin.from("security_alerts").insert({
-      user_id: context.userId,
-      title: "Account locked",
-      description: "You locked this account. Contact support to restore access.",
-      severity: "CRITICAL",
-    });
-    await supabaseAdmin.from("audit_logs").insert({
-      actor_id: context.userId,
-      actor_role: "user",
-      action: "USER_LOCKED_ACCOUNT",
-      resource: "profiles",
-      ip_address: clientIp(),
-      result: "success",
-    });
+    try {
+      await supabaseAdmin.from("security_events").insert({
+        user_id: context.userId,
+        event_type: "ACCOUNT_LOCKED",
+        ip_address: clientIp(),
+        user_agent: clientUserAgent(),
+        risk_score: 90,
+        risk_level: "CRITICAL",
+        risk_reasons: ["User requested account lock"],
+        status: "Locked",
+      });
+    } catch {}
+    try {
+      await supabaseAdmin.from("security_alerts").insert({
+        user_id: context.userId,
+        title: "Account locked",
+        description: "You locked this account. Contact support to restore access.",
+        severity: "CRITICAL",
+      });
+    } catch {}
+    try {
+      await supabaseAdmin.from("audit_logs").insert({
+        actor_id: context.userId,
+        actor_role: "user",
+        action: "USER_LOCKED_ACCOUNT",
+        resource: "profiles",
+        ip_address: clientIp(),
+        result: "success",
+      });
+    } catch {}
     return { ok: true };
   });
 

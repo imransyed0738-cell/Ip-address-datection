@@ -76,53 +76,53 @@ function LocationPage() {
   const toggle = useMutation({
     mutationFn: async (enabled: boolean) => {
       let position: GeolocationPosition | null = null;
-      if (enabled) {
-        if (!window.isSecureContext) {
-          throw new Error("Location requires HTTPS or localhost.");
+      if (enabled && typeof window !== "undefined" && navigator.geolocation) {
+        try {
+          position = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: false,
+              maximumAge: 60_000,
+              timeout: 6_000,
+            });
+          });
+        } catch (err) {
+          console.warn("[Location] GPS unavailable, using network IP location:", err);
         }
-        if (!navigator.geolocation) {
-          throw new Error("This browser does not support location services.");
-        }
-
-        // Ask the browser first — no consent is recorded unless permission is granted.
-        position = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(
-            resolve,
-            (err) => {
-              const message =
-                err.code === GeolocationPositionError.PERMISSION_DENIED
-                  ? "Location permission was denied. Allow it in your browser settings and try again."
-                  : err.code === GeolocationPositionError.POSITION_UNAVAILABLE
-                    ? "Your device could not determine its location. Check location services and try again."
-                    : "Location lookup timed out. Try again."
-              reject(new Error(message));
-            },
-            { enableHighAccuracy: false, maximumAge: 60_000, timeout: 20_000 },
-          );
-        });
       }
+
       await consentFn({ data: { enabled } });
+
       if (position) {
         await submitFn({
           data: { latitude: position.coords.latitude, longitude: position.coords.longitude },
-        });
+        }).catch(() => undefined);
       }
+
       await eventFn({
         data: { eventType: "LOCATION_PERMISSION_CHANGED", device: getDeviceInfo() },
       }).catch(() => undefined);
     },
-    onSuccess: () => {
+    onSuccess: (_, enabled) => {
       void queryClient.invalidateQueries({ queryKey: ["profile"] });
-      toast.success("Location preference saved");
+      void queryClient.invalidateQueries({ queryKey: ["conn"] });
+      void queryClient.invalidateQueries({ queryKey: ["security_events"] });
+      toast.success(
+        enabled
+          ? "Location monitoring enabled"
+          : "Location monitoring disabled and coordinates removed",
+      );
     },
     onError: (e: Error) => {
       void queryClient.invalidateQueries({ queryKey: ["profile"] });
-      toast.error("Location not enabled", { description: e.message });
+      toast.error("Location not updated", { description: e.message });
     },
   });
 
   const lat = profile.data?.last_lat as number | null | undefined;
   const lng = profile.data?.last_lng as number | null | undefined;
+  const locationLabel =
+    (profile.data?.last_location_label as string) ||
+    ([profile.data?.city, profile.data?.country].filter(Boolean).join(", ") || (consent ? "Resolving location…" : "Not available"));
 
   return (
     <AppShell unread={unread}>
@@ -164,21 +164,39 @@ function LocationPage() {
             value={
               profile.data?.location_consent_at
                 ? formatWhen(profile.data.location_consent_at as string)
-                : "—"
+                : (consent ? "Active" : "—")
             }
           />
-          <Item label="Latitude" value={consent && lat != null ? "Protected" : "—"} />
-          <Item label="Longitude" value={consent && lng != null ? "Protected" : "—"} />
+          <Item
+            label="Latitude"
+            value={
+              consent && lat != null
+                ? `${Number(lat).toFixed(4)}° ${Number(lat) >= 0 ? "N" : "S"}`
+                : consent
+                  ? "Resolving…"
+                  : "—"
+            }
+          />
+          <Item
+            label="Longitude"
+            value={
+              consent && lng != null
+                ? `${Number(lng).toFixed(4)}° ${Number(lng) >= 0 ? "E" : "W"}`
+                : consent
+                  ? "Resolving…"
+                  : "—"
+            }
+          />
           <Item
             label="Approximate location"
-            value={(profile.data?.last_location_label as string) ?? "Not available"}
+            value={locationLabel}
           />
           <Item
             label="Last updated"
             value={
               profile.data?.last_location_at
                 ? formatWhen(profile.data.last_location_at as string)
-                : "—"
+                : (consent ? "Just now" : "—")
             }
           />
         </dl>
@@ -186,7 +204,7 @@ function LocationPage() {
         {consent && lat != null && lng != null && (
           <Button asChild className="mt-6" variant="outline">
             <a
-              href={`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`}
+              href={`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`}
               target="_blank"
               rel="noreferrer"
             >

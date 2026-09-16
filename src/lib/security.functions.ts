@@ -291,15 +291,71 @@ export const approveMobileTrackingConsent = createServerFn({ method: "POST" })
     return { approved: true };
   });
 
-// In-memory OTP store for email verification when service role key is not configured
-interface StoredPasswordOtp {
+// Resilient OTP store backed by globalThis + local disk persistence
+interface StoredOtpRecord {
   tokenHash: string;
   expiresAt: number;
   attempts: number;
 }
-const passwordOtpCache = new Map<string, StoredPasswordOtp>();
 
-/** Generates a secure 6-digit OTP, stores its hash, and dispatches it via the Cloudflare email worker */
+declare global {
+  var __sentinel_otp_memory_cache: Map<string, StoredOtpRecord> | undefined;
+}
+
+const memoryOtpCache: Map<string, StoredOtpRecord> =
+  globalThis.__sentinel_otp_memory_cache ??
+  (globalThis.__sentinel_otp_memory_cache = new Map<string, StoredOtpRecord>());
+
+async function saveOtpRecord(key: string, record: StoredOtpRecord): Promise<void> {
+  memoryOtpCache.set(key, record);
+  try {
+    const fs = await import("fs/promises");
+    const path = await import("path");
+    const filePath = path.join(process.cwd(), ".otp-storage.json");
+    let stored: Record<string, StoredOtpRecord> = {};
+    try {
+      const raw = await fs.readFile(filePath, "utf-8");
+      stored = JSON.parse(raw);
+    } catch {}
+    stored[key] = record;
+    await fs.writeFile(filePath, JSON.stringify(stored, null, 2), "utf-8");
+  } catch (err) {
+    console.warn("[OTP] Could not persist to disk:", err);
+  }
+}
+
+async function loadOtpRecord(key: string): Promise<StoredOtpRecord | undefined> {
+  const inMem = memoryOtpCache.get(key);
+  if (inMem) return inMem;
+  try {
+    const fs = await import("fs/promises");
+    const path = await import("path");
+    const filePath = path.join(process.cwd(), ".otp-storage.json");
+    const raw = await fs.readFile(filePath, "utf-8");
+    const stored = JSON.parse(raw) as Record<string, StoredOtpRecord>;
+    const rec = stored[key];
+    if (rec) {
+      memoryOtpCache.set(key, rec);
+      return rec;
+    }
+  } catch {}
+  return undefined;
+}
+
+async function removeOtpRecord(key: string): Promise<void> {
+  memoryOtpCache.delete(key);
+  try {
+    const fs = await import("fs/promises");
+    const path = await import("path");
+    const filePath = path.join(process.cwd(), ".otp-storage.json");
+    const raw = await fs.readFile(filePath, "utf-8");
+    const stored = JSON.parse(raw) as Record<string, StoredOtpRecord>;
+    delete stored[key];
+    await fs.writeFile(filePath, JSON.stringify(stored, null, 2), "utf-8");
+  } catch {}
+}
+
+/** Generates a secure 6-digit OTP, stores its hash, and dispatches it via email */
 export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => forgotPasswordOtpInput.parse(d))
   .handler(async ({ data }) => {
@@ -311,10 +367,10 @@ export const sendForgotPasswordOtp = createServerFn({ method: "POST" })
     const otp = String(100000 + ((array[0] || 0) % 900000));
 
     const tokenHash = await hashVerificationToken(`${normalizedEmail}:${otp}`);
-    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-    // Store OTP in resilient server-side cache
-    passwordOtpCache.set(normalizedEmail, {
+    // Store OTP in persistent cache (globalThis + disk)
+    await saveOtpRecord(`forgot:${normalizedEmail}`, {
       tokenHash,
       expiresAt,
       attempts: 0,
@@ -415,14 +471,6 @@ export const sendWelcomeRegistrationEmail = createServerFn({ method: "POST" })
     };
   });
 
-// In-memory cache for new registration email OTP verification
-interface StoredRegistrationOtp {
-  tokenHash: string;
-  expiresAt: number;
-  attempts: number;
-}
-const registrationOtpCache = new Map<string, StoredRegistrationOtp>();
-
 /** Generates and sends a 6-digit verification code to verify user email before creating their account */
 export const sendRegistrationOtp = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => registrationOtpInput.parse(d))
@@ -436,9 +484,10 @@ export const sendRegistrationOtp = createServerFn({ method: "POST" })
     const otp = String(100000 + ((array[0] || 0) % 900000));
 
     const tokenHash = await hashVerificationToken(`register:${normalizedEmail}:${otp}`);
-    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-    registrationOtpCache.set(normalizedEmail, {
+    // Store in persistent cache
+    await saveOtpRecord(`register:${normalizedEmail}`, {
       tokenHash,
       expiresAt,
       attempts: 0,
@@ -448,7 +497,7 @@ export const sendRegistrationOtp = createServerFn({ method: "POST" })
     const mailResult = await sendNotificationEmail({
       to: normalizedEmail,
       subject: `Your Registration Verification Code: ${otp} - Sentinel Security`,
-      text: `Hello ${name},\n\nThank you for opening a Sentinel Security account.\n\nYour 6-digit registration verification code is:\n\n${otp}\n\nThis code will expire in 5 minutes. Enter this code to verify your email and activate your account.\n\nBest regards,\nSentinel Security Team`,
+      text: `Hello ${name},\n\nThank you for opening a Sentinel Security account.\n\nYour 6-digit registration verification code is:\n\n${otp}\n\nThis code will expire in 10 minutes. Enter this code to verify your email and activate your account.\n\nBest regards,\nSentinel Security Team`,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
           <h2 style="color: #111827; margin-top: 0; font-size: 20px;">Complete Your Registration</h2>
@@ -458,7 +507,7 @@ export const sendRegistrationOtp = createServerFn({ method: "POST" })
             <div style="font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: #166534; margin-bottom: 6px;">Registration Verification Code</div>
             <div style="font-family: monospace; font-size: 34px; font-weight: 700; letter-spacing: 0.3em; color: #15803d;">${otp}</div>
           </div>
-          <p style="color: #6b7280; font-size: 13px; line-height: 1.5;">This code will expire in <strong>5 minutes</strong>. Do NOT share this code with anyone.</p>
+          <p style="color: #6b7280; font-size: 13px; line-height: 1.5;">This code will expire in <strong>10 minutes</strong>. Do NOT share this code with anyone.</p>
           <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
           <p style="color: #9ca3af; font-size: 12px; margin-bottom: 0;">Sentinel Security Notification System</p>
         </div>
@@ -480,25 +529,26 @@ export const verifyRegistrationOtp = createServerFn({ method: "POST" })
     const normalizedEmail = data.email.trim().toLowerCase();
     const tokenHash = await hashVerificationToken(`register:${normalizedEmail}:${data.otp.trim()}`);
 
-    const cached = registrationOtpCache.get(normalizedEmail);
+    const cached = await loadOtpRecord(`register:${normalizedEmail}`);
     if (!cached) {
       throw new Error("No verification code found. Please request a new code.");
     }
     if (cached.expiresAt <= Date.now()) {
-      registrationOtpCache.delete(normalizedEmail);
+      await removeOtpRecord(`register:${normalizedEmail}`);
       throw new Error("This verification code has expired. Please request a new code.");
     }
     if (cached.attempts >= 5) {
-      registrationOtpCache.delete(normalizedEmail);
+      await removeOtpRecord(`register:${normalizedEmail}`);
       throw new Error("Too many failed attempts. Please request a new code.");
     }
     if (cached.tokenHash !== tokenHash) {
       cached.attempts += 1;
+      await saveOtpRecord(`register:${normalizedEmail}`, cached);
       throw new Error("Invalid 6-digit verification code. Please check your email.");
     }
 
     // OTP is valid! Remove from cache so it cannot be reused
-    registrationOtpCache.delete(normalizedEmail);
+    await removeOtpRecord(`register:${normalizedEmail}`);
     return { success: true };
   });
 
@@ -509,25 +559,26 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
     const normalizedEmail = data.email.trim().toLowerCase();
     const tokenHash = await hashVerificationToken(`${normalizedEmail}:${data.otp.trim()}`);
 
-    // 1. Check in-memory OTP cache first
-    const cached = passwordOtpCache.get(normalizedEmail);
+    // 1. Check persistent OTP cache (globalThis + disk)
+    const cached = await loadOtpRecord(`forgot:${normalizedEmail}`);
     let verified = false;
 
     if (cached) {
       if (cached.expiresAt <= Date.now()) {
-        passwordOtpCache.delete(normalizedEmail);
+        await removeOtpRecord(`forgot:${normalizedEmail}`);
         throw new Error("This verification code has expired. Please request a new one.");
       }
       if (cached.attempts >= 5) {
-        passwordOtpCache.delete(normalizedEmail);
+        await removeOtpRecord(`forgot:${normalizedEmail}`);
         throw new Error("Too many failed attempts. Please request a new code.");
       }
       if (cached.tokenHash === tokenHash) {
         verified = true;
-        passwordOtpCache.delete(normalizedEmail);
+        await removeOtpRecord(`forgot:${normalizedEmail}`);
       } else {
         cached.attempts += 1;
-        throw new Error("Invalid 6-digit verification code.");
+        await saveOtpRecord(`forgot:${normalizedEmail}`, cached);
+        throw new Error("Invalid 6-digit verification code. Please check your email.");
       }
     }
 
@@ -562,7 +613,7 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
     }
 
     if (!verified) {
-      throw new Error("Invalid or expired 6-digit code.");
+      throw new Error("Invalid or expired 6-digit verification code.");
     }
 
     // 3. Update password via Supabase
@@ -586,14 +637,24 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
 
       // Attempt 3b: Try admin API (works when SUPABASE_SERVICE_ROLE_KEY is configured in .env)
       if (!updatedByServer) {
-        const { data: profile } = await supabaseAdmin
-          .from("profiles")
-          .select("id")
-          .eq("email", normalizedEmail)
-          .maybeSingle();
+        let targetUserId: string | null = null;
+        try {
+          const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
+          const found = userList?.users?.find((u) => u.email?.toLowerCase() === normalizedEmail);
+          if (found) targetUserId = found.id;
+        } catch {}
 
-        if (profile?.id) {
-          const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(profile.id, {
+        if (!targetUserId) {
+          const { data: profile } = await supabaseAdmin
+            .from("profiles")
+            .select("id")
+            .eq("email", normalizedEmail)
+            .maybeSingle();
+          if (profile?.id) targetUserId = profile.id;
+        }
+
+        if (targetUserId) {
+          const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(targetUserId, {
             password: data.password,
           });
 
@@ -601,7 +662,7 @@ export const resetPasswordWithOtp = createServerFn({ method: "POST" })
             updatedByServer = true;
             try {
               await supabaseAdmin.from("security_events").insert({
-                user_id: profile.id,
+                user_id: targetUserId,
                 event_type: "PASSWORD_CHANGED",
                 ip_address: clientIp(),
                 user_agent: clientUserAgent(),
